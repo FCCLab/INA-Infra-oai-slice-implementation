@@ -1,0 +1,6 @@
+[submodule "resource-grid-visualizer"]
+	path = resource-grid-visualizer
+	url = https://github.com/tuannv-github/resource-grid-visualizer.git
+[submodule "openairinterface5g"]
+	path = openairinterface5g
+	url = https://github.com/FCCLab/openairinterface5g.git

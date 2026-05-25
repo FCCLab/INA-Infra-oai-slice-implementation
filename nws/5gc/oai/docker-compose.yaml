@@ -1,0 +1,163 @@
+services:
+    nws-mysql:
+        container_name: "nws-mysql"
+        image: mysql:8.0
+        volumes:
+            - ./database/oai_db.sql:/docker-entrypoint-initdb.d/oai_db.sql
+            - ./healthscripts/mysql-healthcheck.sh:/tmp/mysql-healthcheck.sh
+        environment:
+            - TZ=Europe/Paris
+            - MYSQL_DATABASE=oai_db
+            - MYSQL_USER=test
+            - MYSQL_PASSWORD=test
+            - MYSQL_ROOT_PASSWORD=linux
+        healthcheck:
+            test: /bin/bash -c "/tmp/mysql-healthcheck.sh"
+            interval: 5s
+            timeout: 2s
+            retries: 10
+        networks:
+            nws-oai-cn5g:
+                ipv4_address: 192.168.200.131
+                
+    nws-ims:
+        container_name: "nws-ims"
+        image: oaisoftwarealliance/ims:latest
+        volumes:
+            - ./conf/sip.conf:/etc/asterisk/sip.conf
+            - ./conf/users.conf:/etc/asterisk/users.conf
+        healthcheck:
+            test: /bin/bash -c "pgrep asterisk"
+            interval: 5s
+            timeout: 2s
+            retries: 10
+        networks:
+            nws-oai-cn5g:
+                ipv4_address: 192.168.200.139
+    nws-oai-udr:
+        container_name: "nws-oai-udr"
+        image: oaisoftwarealliance/oai-udr:${OAI_IMAGE_TAG:-develop}
+        expose:
+            - 80/tcp
+            - 8080/tcp
+        volumes:
+            - ./conf/config.yaml:/openair-udr/etc/config.yaml
+        environment:
+            - TZ=Europe/Paris
+        depends_on:
+            - nws-mysql
+            - nws-oai-nrf
+        networks:
+            nws-oai-cn5g:
+                ipv4_address: 192.168.200.136
+    nws-oai-udm:
+        container_name: "nws-oai-udm"
+        image: oaisoftwarealliance/oai-udm:${OAI_IMAGE_TAG:-develop}
+        expose:
+            - 80/tcp
+            - 8080/tcp
+        volumes:
+            - ./conf/config.yaml:/openair-udm/etc/config.yaml
+        environment:
+            - TZ=Europe/Paris
+        depends_on:
+            - nws-oai-udr
+        networks:
+            nws-oai-cn5g:
+                ipv4_address: 192.168.200.137
+    nws-oai-ausf:
+        container_name: "nws-oai-ausf"
+        image: oaisoftwarealliance/oai-ausf:${OAI_IMAGE_TAG:-develop}
+        expose:
+            - 80/tcp
+            - 8080/tcp
+        volumes:
+            - ./conf/config.yaml:/openair-ausf/etc/config.yaml
+        environment:
+            - TZ=Europe/Paris
+        depends_on:
+            - nws-oai-udm
+        networks:
+            nws-oai-cn5g:
+                ipv4_address: 192.168.200.138
+    nws-oai-nrf:
+        container_name: "nws-oai-nrf"
+        image: oaisoftwarealliance/oai-nrf:${OAI_IMAGE_TAG:-develop}
+        expose:
+            - 80/tcp
+            - 8080/tcp
+        volumes:
+            - ./conf/config.yaml:/openair-nrf/etc/config.yaml
+        environment:
+            - TZ=Europe/Paris
+        networks:
+            nws-oai-cn5g:
+                ipv4_address: 192.168.200.130
+    nws-oai-amf:
+        container_name: "nws-oai-amf"
+        image: oaisoftwarealliance/oai-amf:${OAI_IMAGE_TAG:-develop}
+        ports:
+            - 8080/tcp
+            - 38412/sctp
+        expose:
+            - 80/tcp
+        volumes:
+            - ./conf/config.yaml:/openair-amf/etc/config.yaml
+        environment:
+            - TZ=Europe/Paris
+        depends_on:
+            - nws-mysql
+            - nws-oai-nrf
+            - nws-oai-ausf
+        networks:
+            nws-oai-cn5g:
+                ipv4_address: 192.168.200.132
+    nws-oai-smf:
+        container_name: "nws-oai-smf"
+        image: oaisoftwarealliance/oai-smf:${OAI_IMAGE_TAG:-develop}
+        expose:
+            - 80/tcp
+            - 8080/tcp
+            - 8805/udp
+        volumes:
+            - ./conf/config.yaml:/openair-smf/etc/config.yaml
+        environment:
+            - TZ=Europe/Paris
+        depends_on:
+            - nws-oai-nrf
+            - nws-oai-amf
+        networks:
+            nws-oai-cn5g:
+                ipv4_address: 192.168.200.133
+    nws-oai-upf:
+        container_name: "nws-oai-upf"
+        image: oaisoftwarealliance/oai-upf:${OAI_IMAGE_TAG:-develop}
+        ports:
+            - 2152/udp
+            - 8805/udp
+        volumes:
+            - ./conf/config.yaml:/openair-upf/etc/config.yaml
+        environment:
+            - TZ=Europe/Paris
+        depends_on:
+            - nws-oai-nrf
+            - nws-oai-smf
+        cap_add:
+            - NET_ADMIN
+            - SYS_ADMIN
+        cap_drop:
+            - ALL
+        privileged: true
+        networks:
+            nws-oai-cn5g:
+                ipv4_address: 192.168.200.134
+
+networks:
+    nws-oai-cn5g:
+        driver: bridge
+        name: nws-oai-cn5g
+        ipam:
+            config:
+                - subnet: 192.168.200.0/24
+        driver_opts:
+            com.docker.network.bridge.name: "nws-oai-cn5g"

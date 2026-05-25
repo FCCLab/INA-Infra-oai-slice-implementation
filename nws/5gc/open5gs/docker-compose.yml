@@ -1,0 +1,70 @@
+#
+# Copyright 2021-2024 Software Radio Systems Limited
+#
+# This file is part of srsRAN
+#
+# srsRAN is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as
+# published by the Free Software Foundation, either version 3 of
+# the License, or (at your option) any later version.
+#
+# srsRAN is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU Affero General Public License for more details.
+#
+# A copy of the GNU Affero General Public License can be found in
+# the LICENSE file in the top-level directory of this distribution
+# and at http://www.gnu.org/licenses/.
+#
+
+services:
+  nws-5gc:
+    container_name: nws-5gc
+    # image: base-open5gs:v2.7.2_log
+    build:
+      context: open5gs
+      target: open5gs
+      args:
+        OS_VERSION: "22.04"
+        OPEN5GS_VERSION: "v2.7.0"
+    env_file:
+      - ${OPEN_5GS_ENV_FILE:-open5gs/open5gs.env}
+    privileged: true
+    ports:
+      - "29999:9999/tcp"
+    # Uncomment port to use the 5gc from outside the docker network
+    #  - "38412:38412/sctp"
+    #  - "2152:2152/udp"
+    command: 5gc -c /open5gs/open5gs-5gc.yml
+    healthcheck:
+      test: [ "CMD-SHELL", "nc -z 127.0.0.20 7777" ]
+      interval: 3s
+      timeout: 1s
+      retries: 60
+    networks:
+      nws-n2n3:
+        ipv4_address: ${OPEN5GS_IP:-10.53.1.2}
+      nws-n6:
+        # Use 10.47.0.0/24 to avoid clashing with existing Docker net open5gs-5g-core_n6 (10.46.0.0/24)
+        ipv4_address: ${N6_IP:-10.47.0.2}
+
+networks:
+  nws-n2n3:
+    driver: bridge
+    name: nws-n2n3
+    driver_opts:
+      com.docker.network.bridge.name: nws-n2n3
+    ipam:
+      driver: default
+      config:
+        - subnet: 10.53.1.0/24
+  nws-n6:
+    driver: bridge
+    name: nws-n6
+    driver_opts:
+      com.docker.network.bridge.name: nws-n6
+    ipam:
+      driver: default
+      config:
+        - subnet: 10.47.0.0/24
