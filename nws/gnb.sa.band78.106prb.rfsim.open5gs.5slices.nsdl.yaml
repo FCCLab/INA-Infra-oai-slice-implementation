@@ -159,7 +159,7 @@ MACRLCs:
     pucch_TargetSNRx10: 200
     stats_max_ue: 17
     # Scheduler type: 0=SCHE_PF (Proportional Fair), 1=SCHE_NS (Network Slicing)
-    dl_scheduler_type: 0
+    dl_scheduler_type: 1
     ul_scheduler_type: 0
 
 # Network Slices configuration (for SCHE_NS scheduler)
@@ -173,37 +173,42 @@ Slices:
     dedicated_prb_ratio: 0.0
     min_prb_ratio: 0.0
     max_prb_ratio: 100.0
+    # Unused
   - slice_id: 1
     sst: 1
     sd: 0x000001
     dedicated_prb_ratio: 0.0
     min_prb_ratio: 00.0
     max_prb_ratio: 100.0
+    # Total 100Mbps --> 28Mbps
   - slice_id: 2
     sst: 1
     sd: 0x000002
     dedicated_prb_ratio: 0.0
     min_prb_ratio: 00.0
     max_prb_ratio: 100.0
+    # Total 100Mbps --> 28Mbps
   - slice_id: 3
     sst: 1
     sd: 0x000003
     dedicated_prb_ratio: 0.0
     min_prb_ratio: 00.0
     max_prb_ratio: 50.0
+    # Total 100Mbps --> 14Mbps
   - slice_id: 4
     sst: 1
     sd: 0x000004
     dedicated_prb_ratio: 0.0
     min_prb_ratio: 00.0
     max_prb_ratio: 50.0
+    # Total 100Mbps --> 14Mbps
   - slice_id: 5
     sst: 1
     sd: 0x000005
     dedicated_prb_ratio: 0.0
     min_prb_ratio: 00.0
     max_prb_ratio: 50.0
-
+    # Total 100Mbps --> 14Mbps
 L1s:
   - num_cc: 1
     tr_n_preference:  local_mac

@@ -71,7 +71,7 @@ services:
             - /dev/net/tun:/dev/net/tun
         volumes:
             - ../openairinterface5g:/workspace/openairinterface5g
-            - ./gnb.sa.band78.106prb.rfsim.open5gs.5slices.yaml:/workspace/gnb.yaml
+            - ./gnb.sa.band78.106prb.rfsim.open5gs.5slices.nsul.yaml:/workspace/gnb.yaml
             - ./log:/workspace/log
             - ./build_oai.sh:/workspace/build_oai.sh
             - ./scripts/run_gnb.sh:/workspace/run_gnb.sh
