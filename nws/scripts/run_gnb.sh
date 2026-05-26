@@ -47,6 +47,10 @@ if [[ -v USE_ADDITIONAL_OPTIONS ]]; then
   done
 fi
 
+echo "== Resource grid visualization: ${ENABLE_RESOURCE_GRID_VISUALIZATION:-1}"
+echo "==   FAPI_MQ_PATH_DL: ${FAPI_MQ_PATH_DL:-}"
+echo "==   FAPI_MQ_PATH_UL: ${FAPI_MQ_PATH_UL:-}"
+
 echo "== Command: ${args[@]}"
 echo "=================================="
 

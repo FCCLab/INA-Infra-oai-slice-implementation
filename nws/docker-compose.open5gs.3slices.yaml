@@ -26,7 +26,7 @@ services:
         volumes:
             - ../openairinterface5g:/workspace/openairinterface5g
             - ./flexric.conf:/workspace/flexric.conf
-            - ./iperf3_scripts/run_flexric.sh:/workspace/run_flexric.sh
+            - ./scripts/run_flexric.sh:/workspace/run_flexric.sh
         command: /bin/bash /workspace/run_flexric.sh
         healthcheck:
             test: /bin/bash -c "pgrep nearRT-RIC"
@@ -68,7 +68,7 @@ services:
             - ./gnb.sa.band78.106prb.rfsim.open5gs.3slices.yaml:/workspace/gnb.yaml
             - ./log:/workspace/log
             - ./build_oai.sh:/workspace/build_oai.sh
-            - ./iperf3_scripts/run_gnb.sh:/workspace/run_gnb.sh
+            - ./scripts/run_gnb.sh:/workspace/run_gnb.sh
         # command: /bin/bash /workspace/run_gnb.sh
         healthcheck:
             test: /bin/bash -c "pgrep nr-softmodem"
@@ -107,9 +107,7 @@ services:
             - ../openairinterface5g:/workspace/openairinterface5g
             - ./nrue1.uicc.yaml:/workspace/nr-ue.yaml
             - ./build_oai.sh:/workspace/build_oai.sh
-            - ./iperf3_scripts/run_ue.sh:/workspace/run_ue.sh
-            - ./iperf3_scripts/ping_5gc.sh:/workspace/ping_5gc.sh
-            - ./iperf3_scripts/iperf3_client_1.sh:/workspace/iperf3_client.sh
+            - ./scripts/run_ue.sh:/workspace/run_ue.sh
         command: /bin/bash /workspace/run_ue.sh
         healthcheck:
             test: /bin/bash -c "pgrep nr-uesoftmodem"
@@ -146,9 +144,7 @@ services:
             - ../openairinterface5g:/workspace/openairinterface5g
             - ./nrue2.uicc.yaml:/workspace/nr-ue.yaml
             - ./build_oai.sh:/workspace/build_oai.sh
-            - ./iperf3_scripts/run_ue.sh:/workspace/run_ue.sh
-            - ./iperf3_scripts/ping_5gc.sh:/workspace/ping_5gc.sh
-            - ./iperf3_scripts/iperf3_client_2.sh:/workspace/iperf3_client.sh
+            - ./scripts/run_ue.sh:/workspace/run_ue.sh
         command: /bin/bash /workspace/run_ue.sh
         healthcheck:
             test: /bin/bash -c "pgrep nr-uesoftmodem"
