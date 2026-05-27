@@ -38,8 +38,8 @@ PY=../openairinterface5g/openair2/E2AP/flexric/build/examples/xApp/python3
 # Terminal 1 — read tenant slice ratios every second
 python3 ${PY}/xapp_ns_slice_monitor.py
 
-# Terminal 2 — push new UL/DL min/max policy
-export NS_SLICE_SET_JSON='[{"sst":1,"sd":2,"direction":"ul","dedicated":5,"min":15,"max":40}]'
+# Terminal 2 — push new UL/DL min/max policy (must satisfy dedicated <= min <= max)
+export NS_SLICE_SET_JSON='[{"sst":1,"sd":"0x000002","direction":"ul","dedicated":10,"min":10,"max":100}]'
 python3 ${PY}/xapp_ns_slice_set.py
 
 # Optional: SET then print indications every second for 30s
@@ -52,12 +52,17 @@ Indications print JSON like:
 {
   "tstamp": 1234567890,
   "slices": [
-    {"sst": 1, "sd": 2, "direction": "ul", "dedicated": 5.0, "min": 10.0, "max": 40.0}
+    {"sst": 1, "sd": "0x000001", "direction": "ul", "dedicated": 5.0, "min": 10.0, "max": 40.0},
+    {"sst": 1, "sd": "0xffffff", "direction": "ul", "dedicated": 0.0, "min": 0.0, "max": 100.0}
   ]
 }
 ```
 
-Empty `"slices": []` means NS scheduler is off or no tenant slices.
+All configured slices are reported (including default `0xffffff`). SET still rejects `sd=0xffffff`.
+
+Empty `"slices": []` means NS scheduler is off on that direction or the gNB E2 agent is not reporting NS policy.
+
+NS scheduler rule: **dedicated ≤ min ≤ max** (percent), enforced on the **gNB E2 agent** (`ran_func_slice.c`). The xApp forwards SET as-is. E2 **CONTROL ACK** only means the RIC got a reply — confirm on the monitor or in gNB log (`NS E2 SET applied` vs MAC error diagnostic).
 
 ## SET policy (details)
 
