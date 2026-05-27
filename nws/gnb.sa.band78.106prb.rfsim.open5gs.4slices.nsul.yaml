@@ -8,6 +8,9 @@ gNBs:
     gNB_name: gnb-rfsim
     disable_harq: 0
     tracking_area_code: 81
+    # UE-specific search space (UESS) PDCCH candidates per aggregation level.
+    # Order: [L1, L2, L4, L8, L16]. Here: enable 4 candidates at aggregation level 2 only.
+    uess_agg_levels: [0, 4, 0, 0, 0]
     plmn_list:
       - mcc: 001
         mnc: 01
@@ -23,8 +26,6 @@ gNBs:
             sd: 0x03
           - sst: 1
             sd: 0x04
-          - sst: 1
-            sd: 0x05
     nr_cellid: 12345678
     ##### Physical parameters:
     min_rxtxtime: 6
@@ -159,8 +160,8 @@ MACRLCs:
     pucch_TargetSNRx10: 200
     stats_max_ue: 17
     # Scheduler type: 0=SCHE_PF (Proportional Fair), 1=SCHE_NS (Network Slicing)
-    dl_scheduler_type: 1
-    ul_scheduler_type: 0
+    dl_scheduler_type: 0
+    ul_scheduler_type: 1
 
 # Network Slices configuration (for SCHE_NS scheduler)
 # PRB ratios are in percentage (0-100). Shared row: dedicated_prb_ratio, min_prb_ratio, max_prb_ratio.
@@ -171,7 +172,7 @@ Slices:
     sst: 1
     sd: 0xffffff
     dedicated_prb_ratio: 0.0
-    min_prb_ratio: 0.0
+    min_prb_ratio: 00.0
     max_prb_ratio: 100.0
     # Unused
   - slice_id: 1
@@ -198,13 +199,6 @@ Slices:
   - slice_id: 4
     sst: 1
     sd: 0x000004
-    dedicated_prb_ratio: 0.0
-    min_prb_ratio: 00.0
-    max_prb_ratio: 50.0
-    # Total 100Mbps --> 14Mbps
-  - slice_id: 5
-    sst: 1
-    sd: 0x000005
     dedicated_prb_ratio: 0.0
     min_prb_ratio: 00.0
     max_prb_ratio: 50.0

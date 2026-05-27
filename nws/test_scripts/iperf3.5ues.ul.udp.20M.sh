@@ -14,7 +14,7 @@ source "${_IPERF3_DIR}/iperf3.common.sh"
 SESSION="${TMUX_IPERF_SESSION:-tmux_iperf3}"
 HOST_IP="$(iperf3_resolve_host_ip)"
 UDP_PARALLEL="${IPERF3_UDP_PARALLEL:-1}"
-UDP_BW="${IPERF3_UDP_BW:-200M}"
+UDP_BW="${IPERF3_UDP_BW:-20M}"
 
 iperf3_require_tmux
 

@@ -6,8 +6,11 @@ gNBs:
     ##### Identification parameters:
   - gNB_ID: 0xe00
     gNB_name: gnb-rfsim
-    disable_harq: 1
+    disable_harq: 0
     tracking_area_code: 81
+    # UE-specific search space (UESS) PDCCH candidates per aggregation level.
+    # Order: [L1, L2, L4, L8, L16]. Here: enable 4 candidates at aggregation level 2 only.
+    uess_agg_levels: [0, 4, 0, 0, 0]
     plmn_list:
       - mcc: 001
         mnc: 01
@@ -171,7 +174,7 @@ Slices:
     sst: 1
     sd: 0xffffff
     dedicated_prb_ratio: 0.0
-    min_prb_ratio: 0.0
+    min_prb_ratio: 00.0
     max_prb_ratio: 100.0
     # Unused
   - slice_id: 1
