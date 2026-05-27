@@ -1,0 +1,29 @@
+{
+  "tstamp": 1779894924915977,
+  "slices": [
+    {
+      "sst": 1,
+      "sd": 1,
+      "direction": "ul",
+      "dedicated": 0.0,
+      "min": 0.0,
+      "max": 100.0
+    },
+    {
+      "sst": 1,
+      "sd": 2,
+      "direction": "ul",
+      "dedicated": 0.0,
+      "min": 0.0,
+      "max": 100.0
+    },
+    {
+      "sst": 1,
+      "sd": 3,
+      "direction": "ul",
+      "dedicated": 0.0,
+      "min": 0.0,
+      "max": 50.0
+    }
+  ]
+}

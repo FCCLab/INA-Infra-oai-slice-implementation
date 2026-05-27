@@ -70,6 +70,7 @@ RUN apt-get update && \
        zlib1g-dev \
        libreadline-dev \
        libssl-dev \
+       libcurl4-openssl-dev \
        libsctp-dev \
        libblas-dev \
        liblapack-dev \

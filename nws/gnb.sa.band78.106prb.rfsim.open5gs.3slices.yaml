@@ -233,4 +233,4 @@ log_config:
 
 e2_agent:
   near_ric_ip_addr: 192.168.201.142
-  sm_dir: /usr/local/lib/flexric/
+  sm_dir: /workspace/openairinterface5g/openair2/E2AP/flexric/build/flexric_plugins/

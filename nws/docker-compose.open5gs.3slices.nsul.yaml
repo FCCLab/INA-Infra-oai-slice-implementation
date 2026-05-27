@@ -19,13 +19,14 @@ services:
             KPM_VERSION: ${KPM_VERSION:-KPM_V3_00}
             ASAN_OPTIONS: detect_leaks=0
         depends_on:
-            - nws-oai-gnb
+            nws-oai-gnb:
+                condition: service_healthy
         networks:
             nws-oai-rf-sim:
                 ipv4_address: 192.168.201.142
         volumes:
             - ../openairinterface5g:/workspace/openairinterface5g
-            - ./flexric.conf:/workspace/flexric.conf
+            - ./config/flexric.conf:/workspace/flexric.conf
             - ./scripts/run_flexric.sh:/workspace/run_flexric.sh
         command: /bin/bash /workspace/run_flexric.sh
         healthcheck:
