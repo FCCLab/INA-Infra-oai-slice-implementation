@@ -1,0 +1,42 @@
+# Slice monitor xApp on nws-oai-rf-sim.
+#
+# Prerequisites:
+#   - oai-flexric:latest (nws/build_scripts/build_oai_flexric.sh)
+#   - nws-nearRT-RIC already running (bringup.py / RAN compose) at 192.168.201.142
+#   - external network nws-oai-rf-sim with gNB up
+#   - gNB YAML e2_agent.near_ric_ip_addr = 192.168.201.142
+#
+# Usage:
+#   cd nws/scripts/xapp
+#   docker compose up --build
+
+services:
+  nws-xapp-slice-monitor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        FLEXRIC_IMAGE: ${FLEXRIC_IMAGE:-oai-flexric:latest}
+    image: nws-xapp:latest
+    container_name: nws-xapp-slice-monitor
+    environment:
+      PYTHONPATH: /usr/local/flexric/xApp/python3
+      LD_LIBRARY_PATH: /usr/local/lib:/flexric/build/src/xApp
+      FLEXRIC_CONF: /etc/flexric/flexric.conf
+      NWS_XAPP_IN_DOCKER: "1"
+      NEAR_RIC_IP: ${NEAR_RIC_IP:-192.168.201.142}
+    networks:
+      nws-oai-rf-sim:
+        ipv4_address: ${XAPP_IP:-192.168.201.143}
+    volumes:
+      - ../../configs/flexric/flexric.conf:/etc/flexric/flexric.conf:ro
+      - ./out:/xapp/out
+      - ./xapp_slice_monitor.py:/xapp/xapp_slice_monitor.py:ro
+    stdin_open: true
+    tty: true
+    restart: "no"
+
+networks:
+  nws-oai-rf-sim:
+    external: true
+    name: nws-oai-rf-sim

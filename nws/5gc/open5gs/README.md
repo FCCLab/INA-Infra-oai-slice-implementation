@@ -95,11 +95,38 @@ Key configuration parameters in `open5gs/open5gs.env`:
 
 ### Network Configuration
 
-The solution automatically configures:
-- **N2/N3 Interface**: 10.53.1.0/24 (gNB to Core)
-- **N6 Interface**: 10.46.0.0/24 (Core to Internet)
-- **UE IP Range**: 10.45.0.0/24 (UE addresses)
-- **IP Forwarding**: Enabled with NAT for internet access
+The core is deployed on a dedicated Docker bridge network named `nws-n2n3` (subnet: `10.53.1.0/24`).
+
+*   **Host Bridge Interface:** `nws-n2n3`
+*   **Host IP on this Bridge:** `10.53.1.1`
+
+| Network Function | Component | Interface / Port | IP Address |
+|---|---|---|---|
+| **AMF** | Access & Mobility Management | **N2** (SCTP / `38412`) | `10.53.1.2` |
+| **UPF** | User Plane Function | **N3** GTP-U (UDP / `2152`) | `10.53.1.2` |
+| **SMF** | Session Management Function | N4 PFCP (UDP / `8805`) | `10.53.1.2` |
+| **UPF** | User Plane Function | N4 PFCP (UDP / `8805`) | `10.53.1.2` |
+| **N6** | Core egress to Internet | NAT Gateway | `10.47.0.2` (subnets `10.45.0.0/24`) |
+
+
+### Running gNB on Host (Local Machine)
+
+If you build and run the OAI gNB directly on the host, update the gNB's `.yaml` configuration file to bind to the host's IP on the bridge and target the Open5GS AMF:
+
+*   **Host Bridge Interface:** `nws-n2n3`
+*   **Host IP on this Bridge:** `10.53.1.1` (typically)
+*   **Open5GS Core IP (AMF/UPF):** `10.53.1.2`
+
+```yaml
+# amf_ip_address points to the nws-5gc container IP
+amf_ip_address:
+  - ipv4: 10.53.1.2
+
+# NETWORK_INTERFACES points to the host's IP on the nws-n2n3 bridge
+NETWORK_INTERFACES:
+  GNB_IPV4_ADDRESS_FOR_NG_AMF: 10.53.1.1
+  GNB_IPV4_ADDRESS_FOR_NGU: 10.53.1.1
+```
 
 ### Subscriber Management
 

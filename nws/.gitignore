@@ -1,5 +1,9 @@
 .env
-flexric/
 logs
 log/
 log
+rt_ns_slice_policy.json
+docker-compose/.bringup-*.yaml
+__pycache__
+scripts/xapp/out/
+scripts/xapp/rt_slice_stats.json

@@ -1,0 +1,280 @@
+services:
+    nws-nearRT-RIC:
+        build:
+            context: ../../openairinterface5g/openair2/E2AP/flexric
+            dockerfile: docker/Dockerfile.flexric.ubuntu
+        image: oai-flexric:latest
+        container_name: nws-nearRT-RIC
+        working_dir: /tmp
+        user: "${UID:-1000}:${GID:-1000}"
+        cap_drop:
+            - ALL
+        cap_add:
+            - NET_ADMIN  # for network operations
+            - NET_RAW    # for network operations
+        environment:
+            E2AP_VERSION: ${E2AP_VERSION:-E2AP_V3}
+            KPM_VERSION: ${KPM_VERSION:-KPM_V3_00}
+            ASAN_OPTIONS: detect_leaks=0
+        depends_on:
+            nws-oai-cu-cp:
+                condition: service_healthy
+        networks:
+            nws-oai-rf-sim:
+                ipv4_address: 192.168.201.142
+        volumes:
+            - ../configs/flexric/flexric.conf:/usr/local/etc/flexric/flexric.conf
+        healthcheck:
+            test: /bin/bash -c "pgrep nearRT-RIC"
+            start_period: 10s
+            start_interval: 500ms
+            interval: 10s
+            timeout: 5s
+            retries: 5
+
+    nws-oai-du:
+        build:
+            context: ../../openairinterface5g
+            dockerfile: docker/Dockerfile.gNB.ubuntu
+        image: oai-gnb:latest
+        container_name: nws-oai-du
+        ipc: host
+        user: "0:0"
+        cap_drop:
+            - ALL
+        cap_add:
+            - SYS_NICE
+            - NET_ADMIN  # for interface bringup
+            - NET_RAW    # for ping
+        environment:
+            USE_ADDITIONAL_OPTIONS: -E --rfsim --log_config.global_log_options level,nocolor,time
+            ASAN_OPTIONS: detect_leaks=0
+            DU_LOG_FILE: /workspace/log/du.log
+            # Toggle slot-allocation export for resource-grid-visualizer.
+            ENABLE_RESOURCE_GRID_VISUALIZATION: ${ENABLE_RESOURCE_GRID_VISUALIZATION:-0}
+            # Share FAPI slot POSIX mq names with resource-grid-visualizer backend-dl/backend-ul.
+            FAPI_MQ_PATH_DL: ${FAPI_MQ_PATH_DL:-/fapi_dl}
+            FAPI_MQ_PATH_UL: ${FAPI_MQ_PATH_UL:-/fapi_ul}
+        networks:
+            nws-n2n3:
+                ipv4_address: 10.53.1.140
+            nws-oai-rf-sim:
+                ipv4_address: 192.168.201.140
+            nws-oai-f1e1:
+                ipv4_address: 192.168.202.140
+        devices:
+            - /dev/net/tun:/dev/net/tun
+        volumes:
+            - ../configs/gnb/gnb.du.sa.band78.106prb.rfsim.open5gs.3slices.nsul.yaml:/opt/oai-gnb/etc/gnb.yaml
+            - ../log:/opt/oai-gnb/log
+        healthcheck:
+            test: /bin/bash -c "pgrep nr-softmodem"
+            start_period: 10s
+            start_interval: 500ms
+            interval: 10s
+            timeout: 5s
+            retries: 5
+        ports:
+            - "19090:9090"
+
+    nws-oai-cu-cp:
+        build:
+            context: ../../openairinterface5g
+            dockerfile: docker/Dockerfile.gNB.ubuntu
+        image: oai-gnb:latest
+        container_name: nws-oai-cu-cp
+        ipc: host
+        user: "0:0"
+        cap_drop:
+            - ALL
+        cap_add:
+            - SYS_NICE
+            - NET_ADMIN  # for interface bringup
+            - NET_RAW    # for ping
+        environment:
+            USE_ADDITIONAL_OPTIONS: -E --rfsim --log_config.global_log_options level,nocolor,time
+            ASAN_OPTIONS: detect_leaks=0
+            CUCP_LOG_FILE: /workspace/log/cu-cp.log
+        depends_on:
+            nws-oai-du:
+                condition: service_healthy
+        networks:
+            nws-n2n3:
+                ipv4_address: 10.53.1.141
+            nws-oai-rf-sim:
+                ipv4_address: 192.168.201.141
+            nws-oai-f1e1:
+                ipv4_address: 192.168.202.141
+        devices:
+            - /dev/net/tun:/dev/net/tun
+        volumes:
+            - ../configs/gnb/gnb.cucp.sa.band78.106prb.rfsim.open5gs.3slices.nsul.yaml:/opt/oai-gnb/etc/gnb.yaml
+            - ../log:/opt/oai-gnb/log
+        healthcheck:
+            test: /bin/bash -c "pgrep nr-softmodem"
+            start_period: 10s
+            start_interval: 500ms
+            interval: 10s
+            timeout: 5s
+            retries: 5
+        ports:
+            - "19091:9090"
+
+    nws-oai-cu-up:
+        build:
+            context: ../../openairinterface5g
+            dockerfile: docker/Dockerfile.nr-cuup.ubuntu
+        image: oai-nr-cuup:latest
+        container_name: nws-oai-cu-up
+        ipc: host
+        user: "0:0"
+        cap_drop:
+            - ALL
+        cap_add:
+            - SYS_NICE
+            - NET_ADMIN  # for interface bringup
+            - NET_RAW    # for ping
+        environment:
+            ASAN_OPTIONS: detect_leaks=0
+            CUUP_LOG_FILE: /workspace/log/cu-up.log
+        depends_on:
+            nws-oai-cu-cp:
+                condition: service_healthy
+        networks:
+            nws-n2n3:
+                ipv4_address: 10.53.1.142
+            nws-oai-rf-sim:
+                ipv4_address: 192.168.201.143
+            nws-oai-f1e1:
+                ipv4_address: 192.168.202.142
+        devices:
+            - /dev/net/tun:/dev/net/tun
+        volumes:
+            - ../configs/gnb/gnb.cuup.sa.band78.106prb.rfsim.open5gs.3slices.nsul.yaml:/opt/oai-gnb/etc/gnb.yaml
+            - ../log:/opt/oai-gnb/log
+        healthcheck:
+            test: /bin/bash -c "pgrep nr-cuup"
+            start_period: 10s
+            start_interval: 500ms
+            interval: 10s
+            timeout: 5s
+            retries: 5
+
+    nws-oai-nr-ue1:
+        build:
+            context: ../../openairinterface5g
+            dockerfile: docker/Dockerfile.nrUE.ubuntu
+        image: oai-nr-ue:latest
+        container_name: nws-oai-nr-ue1
+        environment:
+            USE_ADDITIONAL_OPTIONS: -E -r 106 --numerology 1 -C 3319680000 --rfsim --log_config.global_log_options level,nocolor,time --rfsimulator.serveraddr 192.168.201.140
+            ASAN_OPTIONS: detect_leaks=0
+        privileged: true
+        cap_drop:
+            - ALL
+        cap_add:
+            - NET_ADMIN  # for interface bringup
+            - NET_RAW    # for ping
+            - SYS_NICE
+        depends_on:
+            - nws-oai-du
+        networks:
+            nws-oai-rf-sim:
+                ipv4_address: 192.168.201.150
+        devices:
+            - /dev/net/tun:/dev/net/tun
+        volumes:
+            - ../configs/ue/nrue1.uicc.yaml:/opt/oai-nr-ue/etc/nr-ue.yaml
+        healthcheck:
+            test: /bin/bash -c "pgrep nr-uesoftmodem"
+            start_period: 10s
+            start_interval: 500ms
+            interval: 10s
+            timeout: 5s
+            retries: 5
+
+    nws-oai-nr-ue2:
+        build:
+            context: ../../openairinterface5g
+            dockerfile: docker/Dockerfile.nrUE.ubuntu
+        image: oai-nr-ue:latest
+        container_name: nws-oai-nr-ue2
+        environment:
+            USE_ADDITIONAL_OPTIONS: -E -r 106 --numerology 1 -C 3319680000 --rfsim --log_config.global_log_options level,nocolor,time --rfsimulator.serveraddr 192.168.201.140
+            ASAN_OPTIONS: detect_leaks=0
+        privileged: true
+        cap_drop:
+            - ALL
+        cap_add:
+            - NET_ADMIN  # for interface bringup
+            - NET_RAW    # for ping
+            - SYS_NICE
+        depends_on:
+            - nws-oai-du
+        networks:
+            nws-oai-rf-sim:
+                ipv4_address: 192.168.201.151
+        devices:
+            - /dev/net/tun:/dev/net/tun
+        volumes:
+            - ../configs/ue/nrue2.uicc.yaml:/opt/oai-nr-ue/etc/nr-ue.yaml
+        healthcheck:
+            test: /bin/bash -c "pgrep nr-uesoftmodem"
+            start_period: 10s
+            start_interval: 500ms
+            interval: 10s
+            timeout: 5s
+            retries: 5
+
+    nws-oai-nr-ue3:
+        build:
+            context: ../../openairinterface5g
+            dockerfile: docker/Dockerfile.nrUE.ubuntu
+        image: oai-nr-ue:latest
+        container_name: nws-oai-nr-ue3
+        environment:
+            USE_ADDITIONAL_OPTIONS: -E -r 106 --numerology 1 -C 3319680000 --rfsim --log_config.global_log_options level,nocolor,time --rfsimulator.serveraddr 192.168.201.140
+            ASAN_OPTIONS: detect_leaks=0
+        privileged: true
+        cap_drop:
+            - ALL
+        cap_add:
+            - NET_ADMIN  # for interface bringup
+            - NET_RAW    # for ping
+            - SYS_NICE
+        depends_on:
+            - nws-oai-du
+        networks:
+            nws-oai-rf-sim:
+                ipv4_address: 192.168.201.152
+        devices:
+            - /dev/net/tun:/dev/net/tun
+        volumes:
+            - ../configs/ue/nrue3.uicc.yaml:/opt/oai-nr-ue/etc/nr-ue.yaml
+        healthcheck:
+            test: /bin/bash -c "pgrep nr-uesoftmodem"
+            start_period: 10s
+            start_interval: 500ms
+            interval: 10s
+            timeout: 5s
+            retries: 5
+
+
+networks:
+    nws-n2n3:
+        external: true
+        name: nws-n2n3
+    nws-oai-rf-sim:
+        driver: bridge
+        name: nws-oai-rf-sim
+        ipam:
+            config:
+                - subnet: 192.168.201.0/24
+        driver_opts:
+            com.docker.network.bridge.name: "nws-oai-rf-sim"
+    nws-oai-f1e1:
+        driver: bridge
+        name: nws-oai-f1e1
+        ipam:
+            config:
+                - subnet: 192.168.202.0/24
