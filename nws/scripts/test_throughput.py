@@ -232,24 +232,39 @@ def iperf_listening(core: str, port: int) -> bool:
 def clear_iperf3(
     containers: list[str],
     *,
+    ports: Optional[list[int]] = None,
     core: Optional[str] = None,
     quiet: bool = False,
 ) -> None:
-    """Stop iperf3 clients in UE containers and optionally servers in core."""
-    for name in containers:
+    """Kill iperf3 processes matching the given ports (SIGKILL) and loop until none remain.
+
+    If *ports* is given, only processes using those specific ports are killed
+    (safe to call while another direction's iperf3 is still running).
+    If *ports* is None, all iperf3 processes in the container are killed.
+    """
+    target_containers = list(containers)
+    if core:
+        target_containers.append(core)
+
+    if ports:
+        ports_pat = "|".join(str(p) for p in sorted(ports))
+        pgrep_cmd  = ["bash", "-c", f"pgrep -f 'iperf3.*-p ({ports_pat})' > /dev/null 2>&1"]
+        pkill_cmd  = ["bash", "-c", f"pkill -9 -f 'iperf3.*-p ({ports_pat})' 2>/dev/null; true"]
+    else:
+        pgrep_cmd  = ["pgrep", "-x", "iperf3"]
+        pkill_cmd  = ["pkill", "-9", "-x", "iperf3"]
+
+    for name in target_containers:
         if not container_running(name):
             continue
-        docker_exec(
-            name,
-            ["bash", "-c", "pkill -x iperf3 2>/dev/null || true"],
-            timeout=15,
-        )
-    if core and container_running(core):
-        docker_exec(
-            core,
-            ["bash", "-c", "pkill -x iperf3 2>/dev/null || true"],
-            timeout=15,
-        )
+        # SIGKILL and verify termination (up to 15 × 200 ms = 3 s)
+        for _ in range(15):
+            r_check = docker_exec(name, pgrep_cmd, timeout=5)
+            if r_check.returncode != 0:
+                break  # no matching process found
+            docker_exec(name, pkill_cmd, timeout=5)
+            time.sleep(0.2)
+
     if not quiet:
         where = ", ".join(containers)
         if core:
@@ -266,7 +281,9 @@ def ensure_iperf_servers(
         print(f"ERROR: core container {core} is not running", file=sys.stderr)
         return False
 
-    docker_exec(core, ["bash", "-c", "pkill -x iperf3 2>/dev/null || true"], timeout=20)
+    ports_pattern = "|".join(str(p) for p in ports)
+    pkill_cmd = f"pkill -f 'iperf3.*-p ({ports_pattern})' 2>/dev/null || true"
+    docker_exec(core, ["bash", "-c", pkill_cmd], timeout=20)
     time.sleep(0.5)
 
     for port in sorted(set(ports)):
@@ -549,7 +566,7 @@ def open_tmux(
     if _tmux_session_alive(session):
         print(f"Killing existing tmux session {session}")
         subprocess.run(["tmux", "kill-session", "-t", session], check=False)
-        clear_iperf3(containers, core=core, quiet=True)
+        clear_iperf3(containers, ports=list(ports.values()), core=core, quiet=True)
 
     reverse = direction == "DL"
     first = containers[0]
@@ -606,7 +623,7 @@ def open_tmux(
         signal.signal(signal.SIGTERM, prev_term)
         if _tmux_session_alive(session):
             subprocess.run(["tmux", "kill-session", "-t", session], check=False)
-        clear_iperf3(containers, core=core)
+        clear_iperf3(containers, ports=list(ports.values()), core=core)
     return rc
 
 
@@ -647,8 +664,8 @@ def main() -> int:
     ap.add_argument(
         "--dir",
         type=parse_directions,
-        default=parse_directions("both"),
-        help="ul | dl | both",
+        default=parse_directions("UL"),
+        help="ul | dl | both (default: ul; use --dir dl in a second terminal for DL)",
     )
     ap.add_argument(
         "--mode",
@@ -731,33 +748,57 @@ def main() -> int:
 
     print(f"Selected UE containers ({len(containers)}):")
     bind_ips: dict[str, Optional[str]] = {}
+    dead: list[str] = []
     for name in containers:
         idx = ue_index(name)
         iface, ip = detect_oaitun_and_ip(name)
         if not ip:
             ip = STATIC_UE_IP.get(idx)
+        # Skip UEs whose oaitun tunnel is absent (PDU session down).
+        if not iface:
+            print(f"  {name}: WARNING — no oaitun interface found (PDU session down?); skipping",
+                  file=sys.stderr)
+            dead.append(name)
+            continue
         if args.no_bind_client:
             bind_ips[name] = None
         else:
             bind_ips[name] = ip
-        print(f"  {name}: oaitun={iface or '?'} pdu={ip or '?'} bind={bind_ips[name] or '(none)'}")
+        print(f"  {name}: oaitun={iface} pdu={ip or '?'} bind={bind_ips[name] or '(none)'}")
+
+    containers = [c for c in containers if c not in dead]
+    if not containers:
+        print("ERROR: no UEs with an active oaitun interface; aborting.", file=sys.stderr)
+        return 1
 
     if args.list_only:
         return 0
 
     # Ports: sequential can share base port; parallel / tmux need one port per UE
     use_multi_port = args.mode == "parallel" or args.tmux
+    direction = directions[0] if directions else "UL"
+    base_port = args.port
+    if args.port == 5201:
+        base_port = 5300 if direction == "DL" else 5200
+
     ports: dict[str, int] = {}
     for name in containers:
         idx = ue_index(name)
-        ports[name] = args.port + (idx - 1) if use_multi_port else args.port
+        ports[name] = base_port + (idx - 1) if use_multi_port else base_port
 
     server_ports = sorted({ports[c] for c in containers})
     bind_server = (args.bind_server or "").strip() or None
 
+    # Clear existing clients on our ports in case they are orphaned from a prior run
+    clear_iperf3(containers, ports=server_ports, quiet=True)
+
     if not args.skip_server:
         if not ensure_iperf_servers(args.core, server_ports, bind_server):
             return 1
+
+    session_name = args.session
+    if args.session == "nws_iperf":
+        session_name = f"{args.session}_{direction}"
 
     # Finite runs: clear UE clients + core servers on process exit.
     cleaned = {"done": False}
@@ -766,13 +807,9 @@ def main() -> int:
         if cleaned["done"]:
             return
         cleaned["done"] = True
-        clear_iperf3(containers, core=args.core, quiet=False)
+        clear_iperf3(containers, ports=list(ports.values()), core=args.core, quiet=False)
 
     if args.tmux:
-        if len(directions) != 1:
-            # tmux is live forever — pick first direction; user should pass --dir ul|dl
-            print("NOTE: --tmux uses a single direction; defaulting to first of --dir "
-                  f"({directions[0]}). Pass --dir ul or --dir dl explicitly.", file=sys.stderr)
         direction = directions[0]
         # open_tmux always clears iperf3 when attach returns / session ends
         return open_tmux(
@@ -781,7 +818,7 @@ def main() -> int:
             bind_ips,
             direction=direction,
             server=args.server,
-            session=args.session,
+            session=session_name,
             udp=args.udp,
             bitrate=args.bitrate,
             streams=args.streams,
