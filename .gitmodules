@@ -1,6 +1,8 @@
 [submodule "resource-grid-visualizer"]
 	path = resource-grid-visualizer
 	url = https://github.com/tuannv-github/resource-grid-visualizer.git
+	branch = main
 [submodule "openairinterface5g"]
 	path = openairinterface5g
 	url = https://github.com/FCCLab/openairinterface5g.git
+	branch = nw-slicing-3gpp
