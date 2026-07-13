@@ -372,6 +372,8 @@ def oai_sources_newer_than_image(image: str = "ran-build:latest") -> bool:
     watch = [
         OAI_DIR / "openair2" / "LAYER2" / "NR_MAC_gNB" / "gNB_scheduler_dlsch.c",
         OAI_DIR / "openair2" / "LAYER2" / "NR_MAC_gNB" / "gNB_scheduler_ulsch.c",
+        OAI_DIR / "openair2" / "LAYER2" / "NR_MAC_gNB" / "gNB_scheduler_primitives.c",
+        OAI_DIR / "openair2" / "LAYER2" / "NR_MAC_gNB" / "mac_rrc_dl_handler.c",
         OAI_DIR / "openair2" / "LAYER2" / "NR_MAC_gNB" / "slice_prb_allocator",
         OAI_DIR / "docker" / "Dockerfile.build.ubuntu",
     ]
@@ -390,34 +392,13 @@ def oai_sources_newer_than_image(image: str = "ran-build:latest") -> bool:
 
 def rebuild_oai_gnb(*, step: Step, force: bool = False) -> bool:
     """
-    Recompile ran-build + package oai-gnb when sources changed (or force=True).
-
-    docker compose --build alone only copies binaries from ran-build:latest and
-    will not pick up edits under openairinterface5g/.
+    Recompile ran-build + package oai-gnb.
+    Let Docker handle image build cache autonomously.
     """
     if not BUILD_RAN_BUILD_SH.is_file() or not BUILD_OAI_GNB_SH.is_file():
         return step.finish(False, f"missing build scripts under {BUILD_SCRIPTS_DIR}")
 
-    need = force or oai_sources_newer_than_image("ran-build:latest")
-    if not need:
-        # Still refresh oai-gnb packaging if ran-build is newer than oai-gnb.
-        rb = docker_image_created_epoch("ran-build:latest")
-        og = docker_image_created_epoch("oai-gnb:latest")
-        if rb is not None and og is not None and rb <= og:
-            return step.finish(True, "oai-gnb image up to date")
-        step.write("ran-build newer than oai-gnb; packaging oai-gnb only")
-        ok, out = run_streamed(
-            ["bash", str(BUILD_OAI_GNB_SH)],
-            cwd=BUILD_SCRIPTS_DIR,
-            timeout=1800.0,
-            step=step,
-        )
-        if not ok:
-            step.write((out or "")[-2000:])
-            return step.finish(False, "build_oai_gnb.sh failed")
-        return step.finish(True, "oai-gnb:latest packaged")
-
-    step.write("OAI sources newer than ran-build:latest — recompiling (long)")
+    step.write("Running build_ran_build.sh...")
     ok, out = run_streamed(
         ["bash", str(BUILD_RAN_BUILD_SH)],
         cwd=BUILD_SCRIPTS_DIR,
@@ -428,6 +409,7 @@ def rebuild_oai_gnb(*, step: Step, force: bool = False) -> bool:
         step.write((out or "")[-2000:])
         return step.finish(False, "build_ran_build.sh failed")
 
+    step.write("Running build_oai_gnb.sh...")
     ok, out = run_streamed(
         ["bash", str(BUILD_OAI_GNB_SH)],
         cwd=BUILD_SCRIPTS_DIR,
@@ -437,7 +419,7 @@ def rebuild_oai_gnb(*, step: Step, force: bool = False) -> bool:
     if not ok:
         step.write((out or "")[-2000:])
         return step.finish(False, "build_oai_gnb.sh failed")
-    return step.finish(True, "ran-build + oai-gnb rebuilt")
+    return step.finish(True, "ran-build + oai-gnb checked/rebuilt")
 
 
 def compose_up(

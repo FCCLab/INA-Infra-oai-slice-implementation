@@ -3,6 +3,8 @@ services:
         build:
             context: ../../openairinterface5g/openair2/E2AP/flexric
             dockerfile: docker/Dockerfile.flexric.ubuntu
+            args:
+                BASE_IMAGE: ubuntu:noble
         image: oai-flexric:latest
         container_name: nws-nearRT-RIC
         working_dir: /tmp
