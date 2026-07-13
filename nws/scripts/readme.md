@@ -147,4 +147,9 @@ curl -s http://127.0.0.1:18080/api/v1/slices | jq .
 ./test_throughput.py --dir ul
 ./test_throughput.py --dir dl --mode parallel
 ./test_throughput.py --dir both --time 20
+./test_throughput.py --ue1 --dir ul                 # single UE
+./test_throughput.py --ue1 --ue3 --tmux --dir ul    # subset
+./test_throughput.py --tmux --dir ul --interval 5   # smoother forever panes (default -i 5)
+# Leaving the test (detach/Ctrl-c/kill-session) clears UE+core iperf3
+# For stable per-UE Mbps: sequential (default) or one UE; parallel+NSBOTH looks bursty at -i 1
 ```

@@ -11,15 +11,19 @@ Examples:
   python3 test_throughput.py --dir dl --mode parallel
   python3 test_throughput.py --dir both --mode sequential --time 20
   python3 test_throughput.py --tmux --dir ul          # one pane/UE, forever
+  python3 test_throughput.py --ue1 --dir ul           # only UE1
+  python3 test_throughput.py --ue1 --ue3 --tmux       # UE1+UE3
   python3 test_throughput.py --udp --bitrate 100M
 """
 
 from __future__ import annotations
 
 import argparse
+import atexit
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -225,6 +229,34 @@ def iperf_listening(core: str, port: int) -> bool:
     return r.returncode == 0
 
 
+def clear_iperf3(
+    containers: list[str],
+    *,
+    core: Optional[str] = None,
+    quiet: bool = False,
+) -> None:
+    """Stop iperf3 clients in UE containers and optionally servers in core."""
+    for name in containers:
+        if not container_running(name):
+            continue
+        docker_exec(
+            name,
+            ["bash", "-c", "pkill -x iperf3 2>/dev/null || true"],
+            timeout=15,
+        )
+    if core and container_running(core):
+        docker_exec(
+            core,
+            ["bash", "-c", "pkill -x iperf3 2>/dev/null || true"],
+            timeout=15,
+        )
+    if not quiet:
+        where = ", ".join(containers)
+        if core:
+            where += f", {core}"
+        print(f"cleared iperf3 on: {where}")
+
+
 def ensure_iperf_servers(
     core: str,
     ports: list[int],
@@ -307,6 +339,7 @@ def run_iperf_one(
     udp: bool,
     bitrate: Optional[str],
     streams: int,
+    interval: float = 1.0,
 ) -> tuple[str, str, float, Optional[str]]:
     """Stream iperf3 live; returns (container, direction, mbps, error)."""
     direction = "DL" if reverse else "UL"
@@ -319,6 +352,7 @@ def run_iperf_one(
         udp=udp,
         bitrate=bitrate,
         streams=streams,
+        interval=interval,
     )
     label = f"{container} {direction} -> {server}:{port}"
     short = container.replace("nws-oai-nr-", "")
@@ -356,6 +390,7 @@ def run_sequential(
     udp: bool,
     bitrate: Optional[str],
     streams: int,
+    interval: float,
 ) -> list[tuple[str, str, float, Optional[str]]]:
     results: list[tuple[str, str, float, Optional[str]]] = []
     for direction in directions:
@@ -372,6 +407,7 @@ def run_sequential(
                     udp=udp,
                     bitrate=bitrate,
                     streams=streams,
+                    interval=interval,
                 )
             )
     return results
@@ -388,6 +424,7 @@ def run_parallel(
     udp: bool,
     bitrate: Optional[str],
     streams: int,
+    interval: float,
 ) -> list[tuple[str, str, float, Optional[str]]]:
     results: list[tuple[str, str, float, Optional[str]]] = []
     for direction in directions:
@@ -406,6 +443,7 @@ def run_parallel(
                     udp=udp,
                     bitrate=bitrate,
                     streams=streams,
+                    interval=interval,
                 ): cname
                 for cname in containers
             }
@@ -426,6 +464,8 @@ def forever_iperf_cmd(
     bitrate: Optional[str],
     streams: int,
     retry_delay: float,
+    interval: float,
+    session: str,
 ) -> list[str]:
     direction = "DL" if reverse else "UL"
     client = build_iperf_client_cmd(
@@ -437,18 +477,55 @@ def forever_iperf_cmd(
         udp=udp,
         bitrate=bitrate,
         streams=streams,
+        interval=interval,
     )
-    docker_cmd = ["docker", "exec", container, *client]
+    docker_cmd = ["docker", "exec", "-t", container, *client]
+    docker_q = " ".join(shlex.quote(a) for a in docker_cmd)
+    # On pane/session exit, kill the container-side client (docker exec often orphans otherwise).
+    cleanup = (
+        f"docker exec {shlex.quote(container)} "
+        f"bash -c 'pkill -x iperf3 2>/dev/null || true' >/dev/null 2>&1 || true"
+    )
+    sess = shlex.quote(session)
+    # Ctrl-C is delivered to the pane's foreground process. If that is `docker exec -t`,
+    # iperf often exits 0 and bash never sees INT — so we background docker and wait,
+    # so Ctrl-C hits this shell, then tear down the whole tmux session.
     script = (
-        f"echo '=== {container} {direction} forever -> {server}:{port} ==='; "
+        f"cleanup() {{ {cleanup}; }}; "
+        f"stop_all() {{ "
+        f"trap - EXIT INT TERM; "
+        f'[ -n "${{pid:-}}" ] && kill "$pid" 2>/dev/null; '
+        f"wait \"$pid\" 2>/dev/null; "
+        f"cleanup; "
+        f"tmux kill-session -t {sess} 2>/dev/null || true; "
+        f"exit 130; "
+        f"}}; "
+        f"trap stop_all INT TERM; "
+        f"trap cleanup EXIT; "
+        f"echo '=== {container} {direction} forever -> {server}:{port} "
+        f"(report every {interval:g}s; Ctrl-C stops all) ==='; "
         f"while true; do "
-        f"{' '.join(shlex.quote(a) for a in docker_cmd)}; "
+        f"{docker_q} & "
+        f"pid=$!; "
+        f"wait \"$pid\"; "
         f"rc=$?; "
+        f"pid=; "
+        f'if [ "$rc" -eq 130 ] || [ "$rc" -gt 128 ]; then '
+        f'echo "=== {container} {direction} interrupted (rc=$rc); stopping ==="; '
+        f"stop_all; "
+        f"fi; "
         f'echo "=== {container} {direction} exited rc=$rc; retry in {retry_delay}s ==="; '
         f"sleep {retry_delay}; "
         f"done"
     )
     return ["bash", "-lc", script]
+
+
+def _tmux_session_alive(session: str) -> bool:
+    return subprocess.run(
+        ["tmux", "has-session", "-t", session],
+        capture_output=True,
+    ).returncode == 0
 
 
 def open_tmux(
@@ -463,13 +540,16 @@ def open_tmux(
     bitrate: Optional[str],
     streams: int,
     retry_delay: float,
+    interval: float,
+    core: str,
 ) -> int:
     if not shutil.which("tmux"):
         print("tmux not found; install tmux or run without --tmux", file=sys.stderr)
         return 1
-    if subprocess.run(["tmux", "has-session", "-t", session], capture_output=True).returncode == 0:
+    if _tmux_session_alive(session):
         print(f"Killing existing tmux session {session}")
         subprocess.run(["tmux", "kill-session", "-t", session], check=False)
+        clear_iperf3(containers, core=core, quiet=True)
 
     reverse = direction == "DL"
     first = containers[0]
@@ -483,6 +563,8 @@ def open_tmux(
         bitrate=bitrate,
         streams=streams,
         retry_delay=retry_delay,
+        interval=interval,
+        session=session,
     )
     subprocess.run(["tmux", "new-session", "-d", "-s", session, "-n", "ue", *cmd0], check=True)
     for cname in containers[1:]:
@@ -496,6 +578,8 @@ def open_tmux(
             bitrate=bitrate,
             streams=streams,
             retry_delay=retry_delay,
+            interval=interval,
+            session=session,
         )
         subprocess.run(["tmux", "split-window", "-t", f"{session}:ue", *cmd], check=True)
         subprocess.run(["tmux", "select-layout", "-t", f"{session}:ue", "tiled"], check=False)
@@ -504,11 +588,26 @@ def open_tmux(
     subprocess.run(["tmux", "set-option", "-t", session, "mouse", "on"], check=False)
     print(
         f"tmux session: {session}  |  {len(containers)} UE pane(s), "
-        f"{direction} forever -> {server}"
+        f"{direction} forever -> {server}  (-i {interval:g}s)"
     )
-    print("Detach: Ctrl-b then d")
-    print(f"Kill:   tmux kill-session -t {session}")
-    return subprocess.call(["tmux", "attach", "-t", session])
+    print("Ctrl-C in any pane stops all UEs and clears iperf3")
+    print(f"Also: tmux kill-session -t {session}")
+
+    def _stop_test(_signum=None, _frame=None) -> None:
+        if _tmux_session_alive(session):
+            subprocess.run(["tmux", "kill-session", "-t", session], check=False)
+
+    prev_int = signal.signal(signal.SIGINT, _stop_test)
+    prev_term = signal.signal(signal.SIGTERM, _stop_test)
+    try:
+        rc = subprocess.call(["tmux", "attach", "-t", session])
+    finally:
+        signal.signal(signal.SIGINT, prev_int)
+        signal.signal(signal.SIGTERM, prev_term)
+        if _tmux_session_alive(session):
+            subprocess.run(["tmux", "kill-session", "-t", session], check=False)
+        clear_iperf3(containers, core=core)
+    return rc
 
 
 def print_summary(results: list[tuple[str, str, float, Optional[str]]]) -> int:
@@ -570,8 +669,39 @@ def main() -> int:
     ap.add_argument("--tmux", action="store_true", help="One pane per UE, iperf forever (implies parallel)")
     ap.add_argument("--session", default="nws_iperf", help="tmux session name")
     ap.add_argument("--retry-delay", type=float, default=1.0, help="tmux forever retry delay")
+    ap.add_argument(
+        "--interval",
+        type=float,
+        default=None,
+        metavar="SEC",
+        help="iperf3 -i report interval (default: 5 with --tmux, else 1). Longer = smoother lines",
+    )
     ap.add_argument("--list-only", action="store_true", help="Only list running UE containers")
+    ue_grp = ap.add_argument_group("UE selection (default: all running)")
+    for i in range(1, 6):
+        ue_grp.add_argument(
+            f"--ue{i}",
+            action="store_true",
+            help=f"Include nws-oai-nr-ue{i}",
+        )
+    ap.add_argument(
+        "--ue",
+        type=int,
+        action="append",
+        dest="ue_nums",
+        metavar="N",
+        choices=range(1, 6),
+        help="Include UE N (repeatable; same as --ueN)",
+    )
     args = ap.parse_args()
+    interval = args.interval if args.interval is not None else (5.0 if args.tmux else 1.0)
+
+    selected: set[int] = set()
+    for i in range(1, 6):
+        if getattr(args, f"ue{i}"):
+            selected.add(i)
+    if args.ue_nums:
+        selected.update(args.ue_nums)
 
     # argparse may already give a list via type=
     directions: list[str] = args.dir if isinstance(args.dir, list) else parse_directions(str(args.dir))
@@ -585,7 +715,21 @@ def main() -> int:
         print("No running UE containers matching nws-oai-nr-ue*")
         return 1
 
-    print(f"Running UE containers ({len(containers)}):")
+    if selected:
+        want = {f"nws-oai-nr-ue{i}" for i in sorted(selected)}
+        missing = sorted(want - set(containers))
+        containers = [c for c in containers if c in want]
+        if missing:
+            print(f"NOTE: not running (skipped): {', '.join(missing)}", file=sys.stderr)
+        if not containers:
+            print(
+                f"None of the selected UEs are running: "
+                f"{', '.join(f'ue{i}' for i in sorted(selected))}",
+                file=sys.stderr,
+            )
+            return 1
+
+    print(f"Selected UE containers ({len(containers)}):")
     bind_ips: dict[str, Optional[str]] = {}
     for name in containers:
         idx = ue_index(name)
@@ -615,12 +759,22 @@ def main() -> int:
         if not ensure_iperf_servers(args.core, server_ports, bind_server):
             return 1
 
+    # Finite runs: clear UE clients + core servers on process exit.
+    cleaned = {"done": False}
+
+    def _cleanup_atexit() -> None:
+        if cleaned["done"]:
+            return
+        cleaned["done"] = True
+        clear_iperf3(containers, core=args.core, quiet=False)
+
     if args.tmux:
         if len(directions) != 1:
             # tmux is live forever — pick first direction; user should pass --dir ul|dl
             print("NOTE: --tmux uses a single direction; defaulting to first of --dir "
                   f"({directions[0]}). Pass --dir ul or --dir dl explicitly.", file=sys.stderr)
         direction = directions[0]
+        # open_tmux always clears iperf3 when attach returns / session ends
         return open_tmux(
             containers,
             ports,
@@ -632,37 +786,47 @@ def main() -> int:
             bitrate=args.bitrate,
             streams=args.streams,
             retry_delay=args.retry_delay,
+            interval=interval,
+            core=args.core,
         )
+
+    atexit.register(_cleanup_atexit)
 
     print(
         f"Mode={args.mode}  dir={'+'.join(directions)}  server={args.server}  "
-        f"time={args.time}s  proto={'UDP' if args.udp else 'TCP'}"
+        f"time={args.time}s  -i={interval:g}s  proto={'UDP' if args.udp else 'TCP'}"
     )
 
-    if args.mode == "parallel":
-        results = run_parallel(
-            containers,
-            ports,
-            bind_ips,
-            directions=directions,
-            server=args.server,
-            duration=args.time,
-            udp=args.udp,
-            bitrate=args.bitrate,
-            streams=args.streams,
-        )
-    else:
-        results = run_sequential(
-            containers,
-            ports,
-            bind_ips,
-            directions=directions,
-            server=args.server,
-            duration=args.time,
-            udp=args.udp,
-            bitrate=args.bitrate,
-            streams=args.streams,
-        )
+    try:
+        if args.mode == "parallel":
+            results = run_parallel(
+                containers,
+                ports,
+                bind_ips,
+                directions=directions,
+                server=args.server,
+                duration=args.time,
+                udp=args.udp,
+                bitrate=args.bitrate,
+                streams=args.streams,
+                interval=interval,
+            )
+        else:
+            results = run_sequential(
+                containers,
+                ports,
+                bind_ips,
+                directions=directions,
+                server=args.server,
+                duration=args.time,
+                udp=args.udp,
+                bitrate=args.bitrate,
+                streams=args.streams,
+                interval=interval,
+            )
+    except KeyboardInterrupt:
+        print("\ninterrupted", file=sys.stderr)
+        return 130
 
     rc = print_summary(results)
     if rc == 0:
