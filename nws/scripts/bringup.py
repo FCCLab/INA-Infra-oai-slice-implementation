@@ -2,14 +2,16 @@
 """
 Bring up Open5GS 5GC + nearRT-RIC + OAI gNB + N UEs (rfsim), then verify PDU ping.
 
-Defaults: 5 UEs, 5-slice NS UL scheduler (docker-compose.open5gs.5slices.nsul.yaml).
+Defaults: 5 UEs, NS UL + PF DL (docker-compose.open5gs.5slices.nsul.yaml).
 
 Examples:
-  python3 bringup.py
-  python3 bringup.py --ues 3 --sch NS
+  python3 bringup.py                         # NSUL; rebuilds OAI gNB if sources newer
+  python3 bringup.py --ues 5 --sch NSDL
+  python3 bringup.py --force-rebuild-oai     # always recompile ran-build + oai-gnb
+  python3 bringup.py --no-build              # skip OAI recompile and compose --build
   python3 bringup.py --ues 2 --sch PF
   python3 bringup.py --skip-core
-  python3 bringup.py --no-ric            # skip FlexRIC nearRT-RIC
+  python3 bringup.py --no-ric
   python3 bringup.py --no-ping
 """
 
@@ -28,14 +30,20 @@ from typing import Optional
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 NWS_DIR = SCRIPT_DIR.parent
+NETWORK_SLICING_DIR = NWS_DIR.parent
 COMPOSE_DIR = NWS_DIR / "docker-compose"
 GNB_CFG_DIR = NWS_DIR / "configs" / "gnb"
+BUILD_SCRIPTS_DIR = NWS_DIR / "build_scripts"
+OAI_DIR = NETWORK_SLICING_DIR / "openairinterface5g"
 CORE_COMPOSE = NWS_DIR / "5gc" / "open5gs" / "docker-compose.yml"
 XAPP_COMPOSE = SCRIPT_DIR / "xapp" / "docker-compose.yml"
 CORE_SERVICE = "nws-5gc"
 GNB_SERVICE = "nws-oai-gnb"
 RIC_SERVICE = "nws-nearRT-RIC"
 DEFAULT_PING_HOST = "10.45.0.1"
+# Compose --build only packages ran-build:latest; these scripts recompile OAI.
+BUILD_RAN_BUILD_SH = BUILD_SCRIPTS_DIR / "build_ran_build.sh"
+BUILD_OAI_GNB_SH = BUILD_SCRIPTS_DIR / "build_oai_gnb.sh"
 
 # UE index 1..5 — static PDU IPs from Open5GS subscriber DB / nrue UICC configs
 UES: list[dict[str, str]] = [
@@ -73,6 +81,29 @@ PF_DEDICATED: dict[int, tuple[str, str]] = {
     ),
 }
 
+# Dedicated NS-DL stack when present (else patch from NSUL base).
+NSDL_DEDICATED: dict[int, tuple[str, str]] = {
+    5: (
+        "docker-compose.open5gs.5slices.nsdl.yaml",
+        "gnb.sa.band78.106prb.rfsim.open5gs.5slices.nsdl.yaml",
+    ),
+}
+
+# Canonical --sch values after alias normalization.
+# NSUL: DL=PF UL=NS | NSDL: DL=NS UL=PF | NSBOTH: DL=NS UL=NS | PF: both PF
+SCH_ALIASES: dict[str, str] = {
+    "NS": "NSUL",
+    "NSUL": "NSUL",
+    "UL": "NSUL",
+    "NSDL": "NSDL",
+    "DL": "NSDL",
+    "NSBOTH": "NSBOTH",
+    "BOTH": "NSBOTH",
+    "NSULDL": "NSBOTH",
+    "NSDLUL": "NSBOTH",
+    "PF": "PF",
+}
+
 
 def parse_ues(value: str) -> int:
     s = value.strip().lower().replace("-", "").replace("_", "")
@@ -83,6 +114,27 @@ def parse_ues(value: str) -> int:
     if n not in (1, 2, 3, 4, 5):
         raise argparse.ArgumentTypeError("--ues must be 1..5")
     return n
+
+
+def parse_sch(value: str) -> str:
+    key = value.strip().upper().replace("-", "").replace("_", "")
+    if key not in SCH_ALIASES:
+        raise argparse.ArgumentTypeError(
+            f"invalid --sch {value!r}; use NS/NSUL, NSDL, NSBOTH/BOTH, or PF"
+        )
+    return SCH_ALIASES[key]
+
+
+def sch_dl_ul(sch: str) -> tuple[int, int]:
+    """Return (dl_scheduler_type, ul_scheduler_type) for canonical sch."""
+    if sch == "PF":
+        return 0, 0
+    if sch == "NSDL":
+        return 1, 0
+    if sch == "NSBOTH":
+        return 1, 1
+    # NSUL (default NS)
+    return 0, 1
 
 
 def setup_log(verbose: bool) -> logging.Logger:
@@ -269,6 +321,123 @@ def run_streamed(
     out = "".join(chunks)
     ok = (not timed_out) and rc == 0
     return ok, out
+
+
+def docker_image_created_epoch(image: str) -> Optional[float]:
+    """Return image Created time as unix epoch, or None if missing."""
+    try:
+        r = subprocess.run(
+            ["docker", "image", "inspect", "-f", "{{.Created}}", image],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if r.returncode != 0:
+        return None
+    created = (r.stdout or "").strip()
+    if not created:
+        return None
+    # Docker prints RFC3339 nano timestamps, e.g. 2026-07-10T16:06:49.692264283Z
+    try:
+        from datetime import datetime
+
+        if created.endswith("Z"):
+            created = created[:-1] + "+00:00"
+        # trim sub-microsecond digits if present
+        if "." in created:
+            head, rest = created.split(".", 1)
+            frac = ""
+            tz = ""
+            for i, ch in enumerate(rest):
+                if ch.isdigit():
+                    frac += ch
+                else:
+                    tz = rest[i:]
+                    break
+            frac = (frac + "000000")[:6]
+            created = f"{head}.{frac}{tz}"
+        return datetime.fromisoformat(created).timestamp()
+    except ValueError:
+        return None
+
+
+def oai_sources_newer_than_image(image: str = "ran-build:latest") -> bool:
+    """True if key OAI MAC sources are newer than the image (or image missing)."""
+    img_ts = docker_image_created_epoch(image)
+    if img_ts is None:
+        return True
+    watch = [
+        OAI_DIR / "openair2" / "LAYER2" / "NR_MAC_gNB" / "gNB_scheduler_dlsch.c",
+        OAI_DIR / "openair2" / "LAYER2" / "NR_MAC_gNB" / "gNB_scheduler_ulsch.c",
+        OAI_DIR / "openair2" / "LAYER2" / "NR_MAC_gNB" / "slice_prb_allocator",
+        OAI_DIR / "docker" / "Dockerfile.build.ubuntu",
+    ]
+    newest = 0.0
+    for p in watch:
+        if not p.exists():
+            continue
+        if p.is_dir():
+            for f in p.rglob("*"):
+                if f.is_file():
+                    newest = max(newest, f.stat().st_mtime)
+        else:
+            newest = max(newest, p.stat().st_mtime)
+    return newest > img_ts
+
+
+def rebuild_oai_gnb(*, step: Step, force: bool = False) -> bool:
+    """
+    Recompile ran-build + package oai-gnb when sources changed (or force=True).
+
+    docker compose --build alone only copies binaries from ran-build:latest and
+    will not pick up edits under openairinterface5g/.
+    """
+    if not BUILD_RAN_BUILD_SH.is_file() or not BUILD_OAI_GNB_SH.is_file():
+        return step.finish(False, f"missing build scripts under {BUILD_SCRIPTS_DIR}")
+
+    need = force or oai_sources_newer_than_image("ran-build:latest")
+    if not need:
+        # Still refresh oai-gnb packaging if ran-build is newer than oai-gnb.
+        rb = docker_image_created_epoch("ran-build:latest")
+        og = docker_image_created_epoch("oai-gnb:latest")
+        if rb is not None and og is not None and rb <= og:
+            return step.finish(True, "oai-gnb image up to date")
+        step.write("ran-build newer than oai-gnb; packaging oai-gnb only")
+        ok, out = run_streamed(
+            ["bash", str(BUILD_OAI_GNB_SH)],
+            cwd=BUILD_SCRIPTS_DIR,
+            timeout=1800.0,
+            step=step,
+        )
+        if not ok:
+            step.write((out or "")[-2000:])
+            return step.finish(False, "build_oai_gnb.sh failed")
+        return step.finish(True, "oai-gnb:latest packaged")
+
+    step.write("OAI sources newer than ran-build:latest — recompiling (long)")
+    ok, out = run_streamed(
+        ["bash", str(BUILD_RAN_BUILD_SH)],
+        cwd=BUILD_SCRIPTS_DIR,
+        timeout=7200.0,
+        step=step,
+    )
+    if not ok:
+        step.write((out or "")[-2000:])
+        return step.finish(False, "build_ran_build.sh failed")
+
+    ok, out = run_streamed(
+        ["bash", str(BUILD_OAI_GNB_SH)],
+        cwd=BUILD_SCRIPTS_DIR,
+        timeout=1800.0,
+        step=step,
+    )
+    if not ok:
+        step.write((out or "")[-2000:])
+        return step.finish(False, "build_oai_gnb.sh failed")
+    return step.finish(True, "ran-build + oai-gnb rebuilt")
 
 
 def compose_up(
@@ -473,14 +642,13 @@ def print_slice_config(gnb_yaml: Path, *, sch: str, ues: int) -> None:
 
 def patch_gnb_scheduler(src: Path, dst: Path, sch: str) -> None:
     """
-    Rewrite scheduler fields for NS or PF.
-    NS (nsul): dl=0 (PF), ul=1 (NS). PF: both 0. Also set legacy scheduler_type.
+    Rewrite scheduler fields for PF / NSUL / NSDL / NSBOTH.
+    Also set legacy scheduler_type (1 if any direction is NS, else 0).
     """
     text = src.read_text(encoding="utf-8")
-    if sch.upper() == "PF":
-        dl, ul, legacy = 0, 0, 0
-    else:
-        dl, ul, legacy = 0, 1, 1
+    sch = sch.upper()
+    dl, ul = sch_dl_ul(sch)
+    legacy = 1 if (dl == 1 or ul == 1) else 0
 
     def repl_field(content: str, key: str, value: int) -> str:
         pat = re.compile(rf"^(\s*{re.escape(key)}\s*:\s*)\d+\s*$", re.MULTILINE)
@@ -492,22 +660,26 @@ def patch_gnb_scheduler(src: Path, dst: Path, sch: str) -> None:
     text = repl_field(text, "ul_scheduler_type", ul)
     text = repl_field(text, "scheduler_type", legacy)
 
-    # If only legacy field exists and NS requested, ensure it is set.
-    if sch.upper() == "NS" and "scheduler_type:" in text and "ul_scheduler_type:" not in text:
-        text = repl_field(text, "scheduler_type", 1)
-    if sch.upper() == "PF" and "scheduler_type:" in text and "ul_scheduler_type:" not in text:
-        text = repl_field(text, "scheduler_type", 0)
+    # Legacy-only YAML: map NS* -> 1, PF -> 0.
+    if "ul_scheduler_type:" not in text and "scheduler_type:" in text:
+        text = repl_field(text, "scheduler_type", legacy)
 
-    # If NS file has dl/ul fields but PF needs them, already handled.
-    # If PF/NS file lacks dl/ul and only has scheduler_type, handled above.
-    # If NS file has dl/ul but no scheduler_type — fine.
-    if sch.upper() == "PF" and "dl_scheduler_type:" not in text and "scheduler_type:" not in text:
-        # Inject under MACRLCs stats_max_ue if possible
+    # Inject dl/ul fields if the file has neither (e.g. some PF/basic YAMLs).
+    if "dl_scheduler_type:" not in text and "scheduler_type:" not in text:
         text = re.sub(
             r"(stats_max_ue:\s*\d+\s*\n)",
             rf"\1    dl_scheduler_type: {dl}\n    ul_scheduler_type: {ul}\n",
             text,
             count=1,
+        )
+    elif "dl_scheduler_type:" not in text and "ul_scheduler_type:" not in text:
+        # Has legacy scheduler_type only — also add explicit dl/ul next to it.
+        text = re.sub(
+            r"(^\s*scheduler_type:\s*\d+\s*\n)",
+            rf"\1    dl_scheduler_type: {dl}\n    ul_scheduler_type: {ul}\n",
+            text,
+            count=1,
+            flags=re.MULTILINE,
         )
 
     dst.write_text(text, encoding="utf-8")
@@ -742,22 +914,35 @@ def main() -> int:
     )
     ap.add_argument(
         "--sch",
-        choices=("NS", "PF", "ns", "pf"),
-        default="NS",
-        help="gNB scheduler: NS (network slicing UL) or PF (proportional fair)",
+        type=parse_sch,
+        default="NSUL",
+        help=(
+            "gNB scheduler: NS/NSUL (UL NS, default), NSDL (DL NS), "
+            "NSBOTH/BOTH (DL+UL NS, unstable in rfsim — see scripts/readme.md), "
+            "or PF (both PF)"
+        ),
     )
     ap.add_argument("--ping-host", default=DEFAULT_PING_HOST, help="L3 ping target via oaitun (UPF)")
     ap.add_argument("--skip-core", action="store_true", help="Do not start 5GC if missing")
     ap.add_argument("--no-ric", action="store_true", help="Do not start nearRT-RIC (FlexRIC)")
     ap.add_argument("--no-down-first", action="store_true", help="Skip RAN compose down before up")
-    ap.add_argument("--no-build", action="store_true", help="Do not pass --build on gNB/RIC compose up")
+    ap.add_argument(
+        "--no-build",
+        action="store_true",
+        help="Skip OAI recompile (ran-build/oai-gnb) and compose --build",
+    )
+    ap.add_argument(
+        "--force-rebuild-oai",
+        action="store_true",
+        help="Force ran-build + oai-gnb rebuild even if sources look unchanged",
+    )
     ap.add_argument("--no-ping", action="store_true", help="Skip PDU attach / ping checks")
     ap.add_argument("--timeout", type=float, default=180.0, help="Per-step wait timeout (seconds)")
     ap.add_argument("--pdu-attempts", type=int, default=36, help="PDU IP poll attempts per UE")
     ap.add_argument("--ping-attempts", type=int, default=24, help="Ping retry attempts per UE")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
-    sch = args.sch.upper()
+    sch = args.sch  # already canonical via parse_sch
     log = setup_log(args.verbose)
 
     if not docker_ok():
@@ -770,6 +955,8 @@ def main() -> int:
     compose_name, gnb_name = RAN_BY_UES[args.ues]
     if sch == "PF" and args.ues in PF_DEDICATED:
         compose_name, gnb_name = PF_DEDICATED[args.ues]
+    elif sch == "NSDL" and args.ues in NSDL_DEDICATED:
+        compose_name, gnb_name = NSDL_DEDICATED[args.ues]
     compose = COMPOSE_DIR / compose_name
     gnb_src = GNB_CFG_DIR / gnb_name
     if not compose.is_file():
@@ -783,12 +970,15 @@ def main() -> int:
     ue_services = [u["container"] for u in ue_rows]
     with_ric = not args.no_ric
     do_ping = not args.no_ping
+    dl_i, ul_i = sch_dl_ul(sch)
 
     # Count steps for [i/N] titles.
     steps_plan: list[str] = []
     if not args.no_down_first:
         steps_plan.append("Stop prior RAN")
     steps_plan.append("Start 5GC")
+    if not args.no_build:
+        steps_plan.append("Build OAI gNB")
     if with_ric:
         steps_plan.append("Start nearRT-RIC")
     steps_plan.append("Start gNB")
@@ -805,7 +995,10 @@ def main() -> int:
         return Step(step_i, total, title)
 
     print(
-        f"Bringup: ues={args.ues} sch={sch} ric={'yes' if with_ric else 'no'} "
+        f"Bringup: ues={args.ues} sch={sch} "
+        f"(DL={sched_label(dl_i)} UL={sched_label(ul_i)}) "
+        f"ric={'yes' if with_ric else 'no'} "
+        f"build={'no' if args.no_build else ('force' if args.force_rebuild_oai else 'yes')} "
         f"compose={compose.name} gnb={gnb_src.name}",
         flush=True,
     )
@@ -814,17 +1007,29 @@ def main() -> int:
     tmp_compose: Optional[Path] = None
     gnb_effective = gnb_src
     try:
-        # For PF on non-dedicated stacks, patch scheduler and write a compose under
-        # COMPOSE_DIR so relative UE/log/build paths still resolve.
+        # Patch scheduler when the selected stack YAML does not already match.
+        need_patch = False
         if sch == "PF" and args.ues not in PF_DEDICATED:
+            need_patch = True
+        elif sch == "NSDL" and args.ues not in NSDL_DEDICATED:
+            need_patch = True
+        elif sch == "NSBOTH":
+            need_patch = True
+        # NSUL uses RAN_BY_UES nsul stacks as-is.
+
+        if need_patch:
             tmpdir = tempfile.TemporaryDirectory(prefix="nws-bringup-")
             patched = Path(tmpdir.name) / gnb_src.name
-            patch_gnb_scheduler(gnb_src, patched, "PF")
+            patch_gnb_scheduler(gnb_src, patched, sch)
             tmp_compose = COMPOSE_DIR / f".bringup-{Path(tmpdir.name).name}.yaml"
             write_patched_compose(compose, tmp_compose, gnb_src, patched)
             compose = tmp_compose
             gnb_effective = patched
-            print(f"PF patch: {patched.name} via {compose.name}", flush=True)
+            print(
+                f"{sch} patch: DL={sched_label(dl_i)} UL={sched_label(ul_i)} "
+                f"via {compose.name}",
+                flush=True,
+            )
 
         if not args.no_down_first:
             if not stop_prior_ran(compose=compose, with_ric=with_ric, step=next_step("Stop prior RAN")):
@@ -832,6 +1037,13 @@ def main() -> int:
 
         if not ensure_core(log, args.timeout, args.skip_core, step=next_step("Start 5GC")):
             return 1
+
+        if not args.no_build:
+            if not rebuild_oai_gnb(
+                step=next_step("Build OAI gNB"),
+                force=args.force_rebuild_oai,
+            ):
+                return 1
 
         if with_ric:
             if not ensure_ric(
@@ -847,6 +1059,7 @@ def main() -> int:
             compose=compose,
             log=log,
             timeout_s=args.timeout,
+            # Image already rebuilt above; compose --build only repackages ran-build.
             build=not args.no_build,
             step=next_step("Start gNB"),
         ):

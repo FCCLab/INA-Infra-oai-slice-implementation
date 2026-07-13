@@ -1,57 +1,51 @@
-# FlexRIC Python xApps (nws)
+# FlexRIC Python xApp (nws) — NS monitor + REST control
 
-Monitor OAI **NS PRB slice policy** over E2 Slice SM (RAN func 145), using the
-same `oai-flexric:latest` image as `nws-nearRT-RIC`.
+Monitor OAI **NS PRB slice policy** over E2 Slice SM (RAN func 145) and change
+it via a REST API (`control_ns_slice_policy`).
 
-## Build base image (once)
-
-```bash
-nws/build_scripts/build_oai_flexric.sh
-```
-
-That builds `openairinterface5g/openair2/E2AP/flexric/docker/Dockerfile.flexric.ubuntu`.
-
-## Run slice monitor
-
-Start nearRT-RIC via bringup / RAN compose first (`nws-nearRT-RIC` at
-`192.168.201.142`). Then:
+## Run
 
 ```bash
 cd nws/scripts/xapp
 docker compose up --build
 ```
 
-This starts `nws-xapp-slice-monitor` at `192.168.201.143`.
+Requires `nws-nearRT-RIC` at `192.168.201.142` and gNB E2 attached. If the xApp
+hangs after `DB filename`, check that the RIC is running.
 
-Requires gNB already on `nws-oai-rf-sim` with:
+## REST API (host network, port 18080)
 
-```yaml
-e2_agent:
-  near_ric_ip_addr: 192.168.201.142
-  sm_dir: /usr/local/lib/flexric/
-```
-
-After RIC starts, **restart the gNB** if it was already up so E2 setup can complete:
+Swagger UI: [http://10.1.132.200:18080/docs](http://10.1.132.200:18080/docs)  
+(also [http://127.0.0.1:18080/docs](http://127.0.0.1:18080/docs) on the lab host)  
+OpenAPI JSON: [http://10.1.132.200:18080/openapi.json](http://10.1.132.200:18080/openapi.json)
 
 ```bash
-docker restart nws-oai-gnb
+# Current policy (from last indication)
+curl -s http://127.0.0.1:18080/api/v1/slices | jq .
+
+# SET one or more slices (dedicated <= min <= max; no sd=0xffffff)
+curl -s -X PUT http://127.0.0.1:18080/api/v1/slices \
+  -H 'Content-Type: application/json' \
+  -d '{"slices":[
+    {"sst":1,"sd":"0x000002","direction":"ul","dedicated":10,"min":10,"max":100}
+  ]}' | jq .
+
+# PATCH merge one entry into current policy (excluding 0xffffff), then SET
+curl -s -X PATCH http://127.0.0.1:18080/api/v1/slices \
+  -H 'Content-Type: application/json' \
+  -d '{"sst":1,"sd":"0x000003","direction":"ul","dedicated":0,"min":0,"max":40}' | jq .
 ```
 
-Wait until `docker logs nws-nearRT-RIC` shows `E2 SETUP-REQUEST rx` / Accepting RAN function … 145, then start the xApp. If the xApp hangs after `DB filename = /tmp/xapp_db`, the RIC is down or unreachable — check `docker ps -a --filter name=nws-nearRT-RIC`.
+Also on the host: `http://127.0.0.1:18080/...` (compose uses `network_mode: host`).
 
-## What you get
+E2 CONTROL ACK only means the RIC got a reply — confirm with another GET or
+gNB log line `NS E2 SET applied`.
 
-Indications carry two slice models; this xApp focuses on the real one:
+## Outputs
 
-| Field | Meaning |
-|-------|---------|
-| `ns_policy` / `slices` | **OAI NS** PRB ratios: SST/SD, `ul`/`dl`, dedicated/min/max % |
-| `flexric` | FlexRIC STATIC/NVS/EDF demo (ignore for NS lab work) |
+| File | Content |
+|------|---------|
+| `out/rt_ns_slice_policy.json` | NS policy only |
+| `out/rt_slice_stats.json` | full indication (`ns_policy` + FlexRIC demo) |
 
-Outputs:
-
-- `out/rt_ns_slice_policy.json` — NS policy only (what you usually want)
-- `out/rt_slice_stats.json` — full indication including FlexRIC demo
-
-`--print` reprints NS JSON when the policy changes (not every 10 ms). Use
-`--print-flexric` only if you need the demo STATIC/NVS dump.
+`--print` reprints NS JSON when the policy changes.
