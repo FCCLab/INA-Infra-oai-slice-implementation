@@ -895,6 +895,13 @@ def main() -> int:
         help="Number of UEs: 1..5 or 1ue..5ue (default 5)",
     )
     ap.add_argument(
+        "--bw",
+        type=int,
+        choices=[106, 133],
+        default=106,
+        help="Bandwidth in PRBs: 106 or 133 (default 106)",
+    )
+    ap.add_argument(
         "--sch",
         type=parse_sch,
         default="NSUL",
@@ -909,9 +916,9 @@ def main() -> int:
     ap.add_argument("--no-ric", action="store_true", help="Do not start nearRT-RIC (FlexRIC)")
     ap.add_argument("--no-down-first", action="store_true", help="Skip RAN compose down before up")
     ap.add_argument(
-        "--no-build",
+        "--build",
         action="store_true",
-        help="Skip OAI recompile (ran-build/oai-gnb) and compose --build",
+        help="Compile/recompile OAI gNB (ran-build/oai-gnb) and run compose --build",
     )
     ap.add_argument(
         "--force-rebuild-oai",
@@ -924,6 +931,8 @@ def main() -> int:
     ap.add_argument("--ping-attempts", type=int, default=24, help="Ping retry attempts per UE")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
+    args.build = args.build or args.force_rebuild_oai
+    args.no_build = not args.build
     sch = args.sch  # already canonical via parse_sch
     log = setup_log(args.verbose)
 
@@ -935,9 +944,20 @@ def main() -> int:
         return 1
 
     compose_name, gnb_name = RAN_BY_UES[args.ues]
+    if args.bw == 133:
+        if args.ues == 5:
+            compose_name = "docker-compose.open5gs.5slices.nsul.133prb.yaml"
+            gnb_name = "gnb.sa.band78.133prb.rfsim.open5gs.5slices.nsul.yaml"
+        else:
+            raise ValueError("133 PRB configuration is only supported for 5 UEs (5 slices).")
+
     if sch == "PF" and args.ues in PF_DEDICATED:
+        if args.bw == 133:
+            raise ValueError("PF scheduler is not supported with 133 PRB configuration.")
         compose_name, gnb_name = PF_DEDICATED[args.ues]
     elif sch == "NSDL" and args.ues in NSDL_DEDICATED:
+        if args.bw == 133:
+            raise ValueError("NSDL scheduler is not supported with 133 PRB configuration.")
         compose_name, gnb_name = NSDL_DEDICATED[args.ues]
     compose = COMPOSE_DIR / compose_name
     gnb_src = GNB_CFG_DIR / gnb_name
