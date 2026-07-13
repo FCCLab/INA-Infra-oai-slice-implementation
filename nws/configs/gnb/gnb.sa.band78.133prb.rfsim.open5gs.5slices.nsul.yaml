@@ -7,6 +7,17 @@ gNBs:
   - gNB_ID: 0xe00
     gNB_name: gnb-rfsim
     disable_harq: 0
+    TIMERS:
+      sr_ProhibitTimer: 0
+      sr_TransMax: 64
+      sr_ProhibitTimer_v1700: 0
+      t300: 400
+      t301: 400
+      t310: 2000
+      n310: 20
+      t311: 3000
+      n311: 1
+      t319: 400
     tracking_area_code: 81
     # UE-specific search space (UESS) PDCCH candidates per aggregation level.
     # Order: [L1, L2, L4, L8, L16]. Here: enable level 1 and 4 candidates.
@@ -158,12 +169,16 @@ MACRLCs:
   - num_cc: 1
     tr_s_preference: local_L1
     tr_n_preference: local_RRC
-    pusch_TargetSNRx10: 200
-    pucch_TargetSNRx10: 200
+    pusch_TargetSNRx10: 150
+    pucch_TargetSNRx10: 150
     stats_max_ue: 17
     # Scheduler type: 0=SCHE_PF (Proportional Fair), 1=SCHE_NS (Network Slicing)
     dl_scheduler_type: 0
     ul_scheduler_type: 1
+    pusch_FailureThres: 1000
+    pucch_FailureThres: 1000
+    dl_harq_round_max: 8
+    ul_harq_round_max: 8
 
 # Network Slices configuration (for SCHE_NS scheduler)
 # PRB ratios are in percentage (0-100). Shared row: dedicated_prb_ratio, min_prb_ratio, max_prb_ratio.

@@ -898,8 +898,8 @@ def main() -> int:
         "--bw",
         type=int,
         choices=[106, 133],
-        default=106,
-        help="Bandwidth in PRBs: 106 or 133 (default 106)",
+        default=133,
+        help="Bandwidth in PRBs: 106 or 133 (default 133)",
     )
     ap.add_argument(
         "--sch",
