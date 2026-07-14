@@ -1060,12 +1060,56 @@ class SliceApiHandler(BaseHTTPRequestHandler):
             self._send(500, {"error": f"{type(e).__name__}: {e}"})
 
 
+def _lab_api_urls(port: int) -> list[str]:
+    """Advertise reachable LAN URLs (env override or auto-detect host IPv4s)."""
+    override = (os.environ.get("NWS_XAPP_LAB_IP") or os.environ.get("NWS_XAPP_LAB_URL") or "").strip()
+    if override:
+        if override.startswith("http://") or override.startswith("https://"):
+            base = override.rstrip("/")
+            return [base if base.endswith("/docs") else f"{base}/docs"]
+        return [f"http://{override}:{port}/docs"]
+
+    ips: list[str] = []
+    try:
+        out = subprocess.check_output(["hostname", "-I"], text=True, timeout=2.0)
+        for ip in out.split():
+            if (
+                ip
+                and not ip.startswith("127.")
+                and not ip.startswith("172.")
+                and not ip.startswith("10.244.")
+                and ip not in ("10.53.1.1", "10.47.0.1", "192.168.201.1", "192.168.202.1", "192.168.122.1")
+                and ip not in ips
+            ):
+                ips.append(ip)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    if not ips:
+        try:
+            import socket
+
+            for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+                ip = info[4][0]
+                if ip and not ip.startswith("127.") and ip not in ips:
+                    ips.append(ip)
+        except OSError:
+            pass
+
+    preferred = [ip for ip in ips if ip.startswith("10.1.132.")]
+    others = [ip for ip in ips if ip not in preferred]
+    ordered = preferred + others
+    if not ordered:
+        ordered = ["127.0.0.1"]
+    return [f"http://{ip}:{port}/docs" for ip in ordered[:3]]
+
+
 def _print_api_urls(host: str, port: int) -> None:
     print(f"REST API listening on http://{host}:{port}", flush=True)
     print(f"  Swagger UI  http://{host}:{port}/docs", flush=True)
     print(f"  OpenAPI     http://{host}:{port}/openapi.json", flush=True)
     if host in ("0.0.0.0", "::", ""):
-        print(f"  (lab)       http://10.1.132.200:{port}/docs", flush=True)
+        for url in _lab_api_urls(port):
+            print(f"  (lab)       {url}", flush=True)
     print("  GET/PUT/PATCH /api/v1/slices", flush=True)
 
 

@@ -8,7 +8,8 @@
 # Usage:
 #   cd nws/scripts/xapp
 #   docker compose up --build
-#   curl -s http://10.1.132.200:18080/api/v1/slices | jq .
+#   curl -s http://127.0.0.1:18080/api/v1/slices | jq .
+#   # Lab LAN (this host): http://10.1.132.13:18080/docs  (not .200)
 
 services:
   nws-xapp-slice-monitor:

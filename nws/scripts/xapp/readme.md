@@ -15,9 +15,11 @@ hangs after `DB filename`, check that the RIC is running.
 
 ## REST API (host network, port 18080)
 
-Swagger UI: [http://10.1.132.200:18080/docs](http://10.1.132.200:18080/docs)  
-(also [http://127.0.0.1:18080/docs](http://127.0.0.1:18080/docs) on the lab host)  
-OpenAPI JSON: [http://10.1.132.200:18080/openapi.json](http://10.1.132.200:18080/openapi.json)
+Swagger UI on this host: [http://10.1.132.13:18080/docs](http://10.1.132.13:18080/docs)  
+(also [http://127.0.0.1:18080/docs](http://127.0.0.1:18080/docs))  
+OpenAPI JSON: [http://10.1.132.13:18080/openapi.json](http://10.1.132.13:18080/openapi.json)
+
+Override the advertised lab URL with `NWS_XAPP_LAB_IP` (e.g. `10.1.132.13`).
 
 ```bash
 # Current policy (from last indication)
