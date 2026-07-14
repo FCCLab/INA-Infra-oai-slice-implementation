@@ -9,8 +9,9 @@ gNBs:
     disable_harq: 0
     tracking_area_code: 81
     # UE-specific search space (UESS) PDCCH candidates per aggregation level.
-    # Order: [L1, L2, L4, L8, L16]. Same as all slice experiments: L1=4, L2=2, L4=2.
-    uess_agg_levels: [4, 2, 2, 0, 0]
+    # Order: [L1, L2, L4, L8, L16]. Max for ~34-CCE CORESET (106 PRB, duration 2):
+    # L8 capped at 4 (8*8>34), L16 capped at 2 (8*16>34).
+    uess_agg_levels: [8, 8, 8, 4, 2]
     # CORESET duration in OFDM symbols (1, 2 or 3). Use 2 for all slice experiments.
     coreset_duration: 2
     plmn_list:
