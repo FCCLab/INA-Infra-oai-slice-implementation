@@ -13,7 +13,8 @@ Examples:
   python3 test_throughput.py --tmux --dir ul          # one pane/UE, forever
   python3 test_throughput.py --ue1 --dir ul           # only UE1
   python3 test_throughput.py --ue1 --ue3 --tmux       # UE1+UE3
-  python3 test_throughput.py --udp --bitrate 100M
+  python3 test_throughput.py -u --bitrate 100M         # UDP
+  python3 test_throughput.py -t --tmux --dir UL        # TCP (default)
 """
 
 from __future__ import annotations
@@ -677,8 +678,25 @@ def main() -> int:
     ap.add_argument("--port", type=int, default=DEFAULT_PORT, help="Base iperf3 port (UE i uses port+i-1 in parallel)")
     ap.add_argument("--time", type=int, default=DEFAULT_TIME, help="iperf3 -t seconds (ignored with --tmux)")
     ap.add_argument("--streams", type=int, default=1, help="iperf3 -P parallel streams per UE")
-    ap.add_argument("--udp", action="store_true", help="UDP mode")
-    ap.add_argument("--bitrate", default=None, help="UDP -b bitrate (e.g. 100M)")
+    proto = ap.add_mutually_exclusive_group()
+    proto.add_argument(
+        "-u",
+        "--udp",
+        action="store_const",
+        const="udp",
+        dest="proto",
+        help="UDP mode (iperf3 -u)",
+    )
+    proto.add_argument(
+        "-t",
+        "--tcp",
+        action="store_const",
+        const="tcp",
+        dest="proto",
+        help="TCP mode (default)",
+    )
+    ap.set_defaults(proto="tcp")
+    ap.add_argument("--bitrate", default=None, help="UDP -b bitrate (e.g. 100M); ignored for TCP")
     ap.add_argument("--bind-server", default=DEFAULT_SERVER, help="iperf3 -B on core server (empty to disable)")
     ap.add_argument("--no-bind-client", action="store_true", help="Do not pass -B <UE PDU IP> on clients")
     ap.add_argument("--core", default=CORE_CONTAINER, help="Core container hosting iperf3 -s")
@@ -711,6 +729,7 @@ def main() -> int:
         help="Include UE N (repeatable; same as --ueN)",
     )
     args = ap.parse_args()
+    args.udp = args.proto == "udp"
     interval = args.interval if args.interval is not None else (5.0 if args.tmux else 1.0)
 
     selected: set[int] = set()

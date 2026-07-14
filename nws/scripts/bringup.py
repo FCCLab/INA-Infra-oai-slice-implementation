@@ -7,7 +7,7 @@ Defaults: 5 UEs, NS UL + PF DL (docker-compose.open5gs.5slices.nsul.yaml).
 Examples:
   python3 bringup.py                         # NSUL; rebuilds OAI gNB if sources newer
   python3 bringup.py --ues 5 --sch NSDL
-  python3 bringup.py --force-rebuild-oai     # always recompile ran-build + oai-gnb
+  python3 bringup.py --force-rebuild-oai     # docker --no-cache rebuild ran-build + oai-gnb
   python3 bringup.py --no-build              # skip OAI recompile and compose --build
   python3 bringup.py --ues 2 --sch PF
   python3 bringup.py --skip-core
@@ -393,14 +393,27 @@ def oai_sources_newer_than_image(image: str = "ran-build:latest") -> bool:
 def rebuild_oai_gnb(*, step: Step, force: bool = False) -> bool:
     """
     Recompile ran-build + package oai-gnb.
-    Let Docker handle image build cache autonomously.
+
+    --force-rebuild-oai / force=True passes --no-cache so Docker cannot reuse
+    stale COPY/build_oai layers. When MAC sources are newer than ran-build,
+    also use --no-cache (mtime alone does not always invalidate BuildKit cache).
     """
     if not BUILD_RAN_BUILD_SH.is_file() or not BUILD_OAI_GNB_SH.is_file():
         return step.finish(False, f"missing build scripts under {BUILD_SCRIPTS_DIR}")
 
+    sources_newer = oai_sources_newer_than_image("ran-build:latest")
+    no_cache = force or sources_newer
+    extra = ["--no-cache"] if no_cache else []
+    reason = (
+        "force --no-cache"
+        if force
+        else ("sources newer → --no-cache" if sources_newer else "docker cache ok")
+    )
+    step.write(f"OAI rebuild mode: {reason}")
+
     step.write("Running build_ran_build.sh...")
     ok, out = run_streamed(
-        ["bash", str(BUILD_RAN_BUILD_SH)],
+        ["bash", str(BUILD_RAN_BUILD_SH), *extra],
         cwd=BUILD_SCRIPTS_DIR,
         timeout=7200.0,
         step=step,
@@ -411,7 +424,7 @@ def rebuild_oai_gnb(*, step: Step, force: bool = False) -> bool:
 
     step.write("Running build_oai_gnb.sh...")
     ok, out = run_streamed(
-        ["bash", str(BUILD_OAI_GNB_SH)],
+        ["bash", str(BUILD_OAI_GNB_SH), *extra],
         cwd=BUILD_SCRIPTS_DIR,
         timeout=1800.0,
         step=step,
@@ -419,7 +432,7 @@ def rebuild_oai_gnb(*, step: Step, force: bool = False) -> bool:
     if not ok:
         step.write((out or "")[-2000:])
         return step.finish(False, "build_oai_gnb.sh failed")
-    return step.finish(True, "ran-build + oai-gnb checked/rebuilt")
+    return step.finish(True, f"ran-build + oai-gnb rebuilt ({reason})")
 
 
 def compose_up(
@@ -923,7 +936,7 @@ def main() -> int:
     ap.add_argument(
         "--force-rebuild-oai",
         action="store_true",
-        help="Force ran-build + oai-gnb rebuild even if sources look unchanged",
+        help="Force ran-build + oai-gnb with docker --no-cache (ignore BuildKit cache)",
     )
     ap.add_argument("--no-ping", action="store_true", help="Skip PDU attach / ping checks")
     ap.add_argument("--timeout", type=float, default=180.0, help="Per-step wait timeout (seconds)")

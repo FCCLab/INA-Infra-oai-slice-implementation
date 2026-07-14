@@ -42,7 +42,7 @@ cd xapp && docker compose up --build
 | `--ues` | `5` | 1..5 |
 | `--sch` | `NSUL` | `NS`/`NSUL`, `NSDL`, `NSBOTH`/`BOTH`, `PF` |
 | `--no-build` | off | Skip OAI recompile + compose `--build` |
-| `--force-rebuild-oai` | off | Always recompile `ran-build` + `oai-gnb` |
+| `--force-rebuild-oai` | off | `docker build --no-cache` for `ran-build` + `oai-gnb` |
 | `--ping-host` | `10.45.0.1` | UPF via oaitun |
 
 `--sch` mapping:
@@ -70,12 +70,14 @@ Fix in tree (`gNB_scheduler_dlsch.c`): share `remainUEs` across DL slices and
 remap DL HARQ retx inside the current slice window.
 
 **Build note:** `docker compose --build` only *packages* `ran-build:latest`.
-Default `./bringup.py` (without `--no-build`) recompiles when OAI MAC sources
-are newer than `ran-build:latest` via `build_ran_build.sh` + `build_oai_gnb.sh`:
+Default `./bringup.py` (without `--no-build`) runs `build_ran_build.sh` +
+`build_oai_gnb.sh`. If MAC sources are newer than `ran-build:latest`, or you
+pass `--force-rebuild-oai`, those scripts get **`docker build --no-cache`**
+(so stale BuildKit layers cannot keep an old softmodem):
 
 ```bash
-./bringup.py --sch NSDL                 # rebuild OAI if sources changed, then bring up
-./bringup.py --sch NSDL --force-rebuild-oai
+./bringup.py --sch NSDL                 # --no-cache when sources newer than image
+./bringup.py --sch NSDL --force-rebuild-oai   # always --no-cache
 ./bringup.py --sch NSUL --no-build       # use existing images only
 ```
 
