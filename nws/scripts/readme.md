@@ -151,7 +151,11 @@ curl -s http://127.0.0.1:18080/api/v1/slices | jq .
 ./test_throughput.py --dir both --time 20
 ./test_throughput.py --ue1 --dir ul                 # single UE
 ./test_throughput.py --ue1 --ue3 --tmux --dir ul    # subset
-./test_throughput.py --tmux --dir ul --interval 5   # smoother forever panes (default -i 5)
+./test_throughput.py --tmux --dir ul --interval 5   # UL: server panes on nws-5gc (ports 520x)
+./test_throughput.py --tmux --dir dl --interval 5   # DL: UE client panes (ports 530x)
+# Two terminals at once (UDP): run the two lines above in separate terminals.
+# Cleanup is port-scoped so stopping one side does not kill the other.
+./test_throughput.py -u --dir ul                    # UDP: -P 5 -b 10M per stream
 # Leaving the test (detach/Ctrl-c/kill-session) clears UE+core iperf3
 # For stable per-UE Mbps: sequential (default) or one UE; parallel+NSBOTH looks bursty at -i 1
 ```

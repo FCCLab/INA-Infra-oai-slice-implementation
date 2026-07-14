@@ -10,10 +10,15 @@ Examples:
   python3 test_throughput.py --dir ul
   python3 test_throughput.py --dir dl --mode parallel
   python3 test_throughput.py --dir both --mode sequential --time 20
-  python3 test_throughput.py --tmux --dir ul          # one pane/UE, forever
+  python3 test_throughput.py --tmux --dir ul          # UL: panes show server on core
+  python3 test_throughput.py --tmux --dir dl          # DL: panes show UE client (-R)
+  # Two terminals (UDP UL+DL): different ports 520x / 530x — do not use --dir both with --tmux
+  #   T1: ./test_throughput.py --tmux --dir ul -u
+  #   T2: ./test_throughput.py --tmux --dir dl -u
   python3 test_throughput.py --ue1 --dir ul           # only UE1
   python3 test_throughput.py --ue1 --ue3 --tmux       # UE1+UE3
-  python3 test_throughput.py -u --bitrate 100M         # UDP
+  python3 test_throughput.py -u                       # UDP: -P 5 -b 10M (per stream)
+  python3 test_throughput.py -u --bitrate 100M        # UDP override bitrate
   python3 test_throughput.py -t --tmux --dir UL        # TCP (default)
 """
 
@@ -36,6 +41,9 @@ CORE_CONTAINER = "nws-5gc"
 DEFAULT_SERVER = "10.47.0.2"  # Open5GS N6
 DEFAULT_PORT = 5201
 DEFAULT_TIME = 20
+DEFAULT_TCP_STREAMS = 1
+DEFAULT_UDP_STREAMS = 5
+DEFAULT_UDP_BITRATE = "10M"  # per stream with -P (5 × 10M = 50M total)
 UE_NAME_RE = re.compile(r"^nws-oai-nr-ue(\d+)$")
 OAITUN_CANDIDATES = ("oaitun_ue0", "oaitun_ue1")
 # Fallback static PDU IPs (subscriber DB)
@@ -485,6 +493,7 @@ def forever_iperf_cmd(
     interval: float,
     session: str,
 ) -> list[str]:
+    """DL (or client-side) pane: foreground iperf3 client in the UE container."""
     direction = "DL" if reverse else "UL"
     client = build_iperf_client_cmd(
         server=server,
@@ -499,10 +508,10 @@ def forever_iperf_cmd(
     )
     docker_cmd = ["docker", "exec", "-t", container, *client]
     docker_q = " ".join(shlex.quote(a) for a in docker_cmd)
-    # On pane/session exit, kill the container-side client (docker exec often orphans otherwise).
+    # Port-scoped kill so a parallel UL/DL session in another terminal survives.
     cleanup = (
         f"docker exec {shlex.quote(container)} "
-        f"bash -c 'pkill -x iperf3 2>/dev/null || true' >/dev/null 2>&1 || true"
+        f"bash -c 'pkill -9 -f \"iperf3.*-p {port}\" 2>/dev/null || true' >/dev/null 2>&1 || true"
     )
     sess = shlex.quote(session)
     # Ctrl-C is delivered to the pane's foreground process. If that is `docker exec -t`,
@@ -539,6 +548,92 @@ def forever_iperf_cmd(
     return ["bash", "-lc", script]
 
 
+def forever_ul_server_cmd(
+    container: str,
+    *,
+    core: str,
+    server: str,
+    port: int,
+    bind_ip: Optional[str],
+    bind_server: Optional[str],
+    udp: bool,
+    bitrate: Optional[str],
+    streams: int,
+    retry_delay: float,
+    interval: float,
+    session: str,
+) -> list[str]:
+    """UL pane: foreground iperf3 server on core (receiver stats); UE client in background."""
+    client = build_iperf_client_cmd(
+        server=server,
+        port=port,
+        duration=0,
+        reverse=False,
+        bind_ip=bind_ip,
+        udp=udp,
+        bitrate=bitrate,
+        streams=streams,
+        interval=interval,
+    )
+    # Client: no -t TTY so its interval spam does not fight the server pane.
+    client_docker = ["docker", "exec", container, *client]
+    client_q = " ".join(shlex.quote(a) for a in client_docker)
+
+    server_parts = ["iperf3", "-s", "-p", str(port), "-i", str(interval)]
+    if bind_server:
+        server_parts[1:1] = ["-B", bind_server]
+    server_inner = " ".join(shlex.quote(a) for a in server_parts)
+    server_docker_q = (
+        f"docker exec -t {shlex.quote(core)} bash -lc {shlex.quote(server_inner)}"
+    )
+
+    cleanup = (
+        f"docker exec {shlex.quote(container)} "
+        f"bash -c 'pkill -9 -f \"iperf3.*-p {port}\" 2>/dev/null || true' >/dev/null 2>&1 || true; "
+        f"docker exec {shlex.quote(core)} "
+        f"bash -c 'pkill -9 -f \"iperf3.*-p {port}\" 2>/dev/null || true' >/dev/null 2>&1 || true"
+    )
+    sess = shlex.quote(session)
+    label = f"{container} UL server {core}:{port}"
+    script = (
+        f"cleanup() {{ {cleanup}; }}; "
+        f"stop_all() {{ "
+        f"trap - EXIT INT TERM; "
+        f'[ -n "${{cpid:-}}" ] && kill "$cpid" 2>/dev/null; '
+        f'[ -n "${{spid:-}}" ] && kill "$spid" 2>/dev/null; '
+        f"wait \"$cpid\" 2>/dev/null; "
+        f"wait \"$spid\" 2>/dev/null; "
+        f"cleanup; "
+        f"tmux kill-session -t {sess} 2>/dev/null || true; "
+        f"exit 130; "
+        f"}}; "
+        f"trap stop_all INT TERM; "
+        f"trap cleanup EXIT; "
+        f"echo '=== {label} (receiver view; UE client in background; "
+        f"report every {interval:g}s; Ctrl-C stops all) ==='; "
+        # Background forever client (retry until server is up / after disconnect).
+        f"( while true; do {client_q} >/dev/null 2>&1; "
+        f"echo \"=== {container} UL client exited; retry in {retry_delay}s ===\"; "
+        f"sleep {retry_delay}; done ) & "
+        f"cpid=$!; "
+        # Foreground server on core — this is what the pane shows.
+        f"while true; do "
+        f"{server_docker_q} & "
+        f"spid=$!; "
+        f"wait \"$spid\"; "
+        f"rc=$?; "
+        f"spid=; "
+        f'if [ "$rc" -eq 130 ] || [ "$rc" -gt 128 ]; then '
+        f'echo "=== {label} interrupted (rc=$rc); stopping ==="; '
+        f"stop_all; "
+        f"fi; "
+        f'echo "=== {label} exited rc=$rc; retry in {retry_delay}s ==="; '
+        f"sleep {retry_delay}; "
+        f"done"
+    )
+    return ["bash", "-lc", script]
+
+
 def _tmux_session_alive(session: str) -> bool:
     return subprocess.run(
         ["tmux", "has-session", "-t", session],
@@ -560,6 +655,7 @@ def open_tmux(
     retry_delay: float,
     interval: float,
     core: str,
+    bind_server: Optional[str] = None,
 ) -> int:
     if not shutil.which("tmux"):
         print("tmux not found; install tmux or run without --tmux", file=sys.stderr)
@@ -569,24 +665,27 @@ def open_tmux(
         subprocess.run(["tmux", "kill-session", "-t", session], check=False)
         clear_iperf3(containers, ports=list(ports.values()), core=core, quiet=True)
 
+    # UL: show server (receiver) on core. DL: show client on UE (-R).
+    show_server = direction == "UL"
     reverse = direction == "DL"
-    first = containers[0]
-    cmd0 = forever_iperf_cmd(
-        first,
-        server=server,
-        port=ports[first],
-        reverse=reverse,
-        bind_ip=bind_ips.get(first),
-        udp=udp,
-        bitrate=bitrate,
-        streams=streams,
-        retry_delay=retry_delay,
-        interval=interval,
-        session=session,
-    )
-    subprocess.run(["tmux", "new-session", "-d", "-s", session, "-n", "ue", *cmd0], check=True)
-    for cname in containers[1:]:
-        cmd = forever_iperf_cmd(
+
+    def pane_cmd(cname: str) -> list[str]:
+        if show_server:
+            return forever_ul_server_cmd(
+                cname,
+                core=core,
+                server=server,
+                port=ports[cname],
+                bind_ip=bind_ips.get(cname),
+                bind_server=bind_server,
+                udp=udp,
+                bitrate=bitrate,
+                streams=streams,
+                retry_delay=retry_delay,
+                interval=interval,
+                session=session,
+            )
+        return forever_iperf_cmd(
             cname,
             server=server,
             port=ports[cname],
@@ -599,14 +698,22 @@ def open_tmux(
             interval=interval,
             session=session,
         )
-        subprocess.run(["tmux", "split-window", "-t", f"{session}:ue", *cmd], check=True)
+
+    first = containers[0]
+    subprocess.run(
+        ["tmux", "new-session", "-d", "-s", session, "-n", "ue", *pane_cmd(first)],
+        check=True,
+    )
+    for cname in containers[1:]:
+        subprocess.run(["tmux", "split-window", "-t", f"{session}:ue", *pane_cmd(cname)], check=True)
         subprocess.run(["tmux", "select-layout", "-t", f"{session}:ue", "tiled"], check=False)
 
     subprocess.run(["tmux", "select-layout", "-t", f"{session}:ue", "tiled"], check=False)
     subprocess.run(["tmux", "set-option", "-t", session, "mouse", "on"], check=False)
+    view = f"server panes on {core}" if show_server else f"client panes on UEs"
     print(
-        f"tmux session: {session}  |  {len(containers)} UE pane(s), "
-        f"{direction} forever -> {server}  (-i {interval:g}s)"
+        f"tmux session: {session}  |  {len(containers)} pane(s), "
+        f"{direction} forever ({view}) -> {server}  (-i {interval:g}s)"
     )
     print("Ctrl-C in any pane stops all UEs and clears iperf3")
     print(f"Also: tmux kill-session -t {session}")
@@ -666,7 +773,7 @@ def main() -> int:
         "--dir",
         type=parse_directions,
         default=parse_directions("UL"),
-        help="ul | dl | both (default: ul; use --dir dl in a second terminal for DL)",
+        help="ul | dl | both (default: ul). For two terminals use --dir ul and --dir dl separately (not both with --tmux)",
     )
     ap.add_argument(
         "--mode",
@@ -677,7 +784,12 @@ def main() -> int:
     ap.add_argument("--server", default=DEFAULT_SERVER, help="iperf3 server IP (N6 / core)")
     ap.add_argument("--port", type=int, default=DEFAULT_PORT, help="Base iperf3 port (UE i uses port+i-1 in parallel)")
     ap.add_argument("--time", type=int, default=DEFAULT_TIME, help="iperf3 -t seconds (ignored with --tmux)")
-    ap.add_argument("--streams", type=int, default=1, help="iperf3 -P parallel streams per UE")
+    ap.add_argument(
+        "--streams",
+        type=int,
+        default=None,
+        help=f"iperf3 -P parallel streams per UE (default: {DEFAULT_UDP_STREAMS} for UDP, {DEFAULT_TCP_STREAMS} for TCP)",
+    )
     proto = ap.add_mutually_exclusive_group()
     proto.add_argument(
         "-u",
@@ -685,7 +797,7 @@ def main() -> int:
         action="store_const",
         const="udp",
         dest="proto",
-        help="UDP mode (iperf3 -u)",
+        help=f"UDP mode (iperf3 -u; default -P {DEFAULT_UDP_STREAMS} -b {DEFAULT_UDP_BITRATE} per stream)",
     )
     proto.add_argument(
         "-t",
@@ -696,12 +808,20 @@ def main() -> int:
         help="TCP mode (default)",
     )
     ap.set_defaults(proto="tcp")
-    ap.add_argument("--bitrate", default=None, help="UDP -b bitrate (e.g. 100M); ignored for TCP")
+    ap.add_argument(
+        "--bitrate",
+        default=None,
+        help=f"UDP -b bitrate per stream (default: {DEFAULT_UDP_BITRATE} with -u); ignored for TCP",
+    )
     ap.add_argument("--bind-server", default=DEFAULT_SERVER, help="iperf3 -B on core server (empty to disable)")
     ap.add_argument("--no-bind-client", action="store_true", help="Do not pass -B <UE PDU IP> on clients")
     ap.add_argument("--core", default=CORE_CONTAINER, help="Core container hosting iperf3 -s")
     ap.add_argument("--skip-server", action="store_true", help="Do not (re)start iperf3 servers in core")
-    ap.add_argument("--tmux", action="store_true", help="One pane per UE, iperf forever (implies parallel)")
+    ap.add_argument(
+        "--tmux",
+        action="store_true",
+        help="One pane per UE, iperf forever (UL: server view on core; DL: UE client -R)",
+    )
     ap.add_argument("--session", default="nws_iperf", help="tmux session name")
     ap.add_argument("--retry-delay", type=float, default=1.0, help="tmux forever retry delay")
     ap.add_argument(
@@ -730,6 +850,10 @@ def main() -> int:
     )
     args = ap.parse_args()
     args.udp = args.proto == "udp"
+    if args.streams is None:
+        args.streams = DEFAULT_UDP_STREAMS if args.udp else DEFAULT_TCP_STREAMS
+    if args.udp and args.bitrate is None:
+        args.bitrate = DEFAULT_UDP_BITRATE
     interval = args.interval if args.interval is not None else (5.0 if args.tmux else 1.0)
 
     selected: set[int] = set()
@@ -812,7 +936,13 @@ def main() -> int:
     clear_iperf3(containers, ports=server_ports, quiet=True)
 
     if not args.skip_server:
-        if not ensure_iperf_servers(args.core, server_ports, bind_server):
+        # UL+tmux: foreground iperf3 -s runs in each pane (receiver view).
+        # DL+tmux / non-tmux: daemon servers in core as before.
+        if args.tmux and direction == "UL":
+            clear_iperf3(containers, ports=server_ports, core=args.core, quiet=True)
+            print(f"UL tmux: iperf3 servers will run in panes on {args.core} "
+                  f"(ports {', '.join(str(p) for p in server_ports)})")
+        elif not ensure_iperf_servers(args.core, server_ports, bind_server):
             return 1
 
     session_name = args.session
@@ -844,6 +974,7 @@ def main() -> int:
             retry_delay=args.retry_delay,
             interval=interval,
             core=args.core,
+            bind_server=bind_server,
         )
 
     atexit.register(_cleanup_atexit)
@@ -851,6 +982,8 @@ def main() -> int:
     print(
         f"Mode={args.mode}  dir={'+'.join(directions)}  server={args.server}  "
         f"time={args.time}s  -i={interval:g}s  proto={'UDP' if args.udp else 'TCP'}"
+        f"  -P={args.streams}"
+        + (f"  -b={args.bitrate}/stream" if args.udp and args.bitrate else "")
     )
 
     try:
