@@ -12,6 +12,8 @@ Examples:
   python3 bringup.py --ues 2 --sch PF
   python3 bringup.py --sch NSBOTH --split --bw 133  # 5 UE CU/DU/CU-UP @ 133 PRB
   python3 bringup.py --sch NSUL --split --bw 106    # 3 UE CU/DU/CU-UP @ 106 PRB
+  python3 bringup.py down                    # stop RAN + RIC (all known compose files)
+  python3 bringup.py down --with-core        # also stop 5GC
   python3 bringup.py --skip-core
   python3 bringup.py --no-ric
   python3 bringup.py --no-ping
@@ -838,6 +840,98 @@ def stop_prior_ran(
     return step.finish(True, "stopped" if ok else "stopped (with warnings)")
 
 
+def iter_ran_compose_files() -> list[Path]:
+    """All known RAN compose files (mono + split + dedicated + temp bringup patches)."""
+    names: set[str] = set()
+    for compose_name, _ in RAN_BY_UES.values():
+        names.add(compose_name)
+    for compose_name, _ in PF_DEDICATED.values():
+        names.add(compose_name)
+    for compose_name, _ in NSDL_DEDICATED.values():
+        names.add(compose_name)
+    names.add("docker-compose.open5gs.5slices.nsul.133prb.yaml")
+    for compose_name, _, _ in SPLIT_STACKS.values():
+        names.add(compose_name)
+    paths = [COMPOSE_DIR / n for n in sorted(names) if (COMPOSE_DIR / n).is_file()]
+    paths.extend(sorted(COMPOSE_DIR.glob(".bringup-*.yaml")))
+    # Deduplicate by resolve() while preserving order.
+    seen: set[Path] = set()
+    out: list[Path] = []
+    for p in paths:
+        key = p.resolve()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(p)
+    return out
+
+
+def bring_down(*, with_core: bool, with_ric: bool, verbose: bool) -> int:
+    """Tear down RAN (all known compose files), optional RIC + 5GC."""
+    setup_log(verbose)
+    if not docker_ok():
+        print("FAIL: docker is not available", flush=True)
+        return 1
+
+    files = iter_ran_compose_files()
+    steps = 1 + (1 if with_ric else 0) + (1 if with_core else 0)
+    step_i = 0
+
+    def next_step(title: str) -> Step:
+        nonlocal step_i
+        step_i += 1
+        return Step(step_i, steps, title)
+
+    print(
+        f"Teardown: ran={len(files)} compose file(s) "
+        f"ric={'yes' if with_ric else 'no'} "
+        f"core={'yes' if with_core else 'no'}",
+        flush=True,
+    )
+
+    step = next_step("Stop RAN")
+    any_fail = False
+    for compose in files:
+        step.write(f"down {compose.name}")
+        ok, out = compose_down(compose, cwd=COMPOSE_DIR, step=step)
+        if not ok:
+            any_fail = True
+            step.write((out or "")[-400:] or f"{compose.name}: compose down non-zero")
+    # Leftover temp compose YAMLs (already down'd if listed); remove files.
+    for tmp in COMPOSE_DIR.glob(".bringup-*.yaml"):
+        try:
+            tmp.unlink()
+            step.write(f"removed {tmp.name}")
+        except OSError as e:
+            step.write(f"could not remove {tmp.name}: {e}")
+    step.finish(True, "stopped" if not any_fail else "stopped (with warnings)")
+
+    if with_ric:
+        step = next_step("Stop nearRT-RIC")
+        if XAPP_COMPOSE.is_file():
+            ok, out = compose_down(XAPP_COMPOSE, cwd=XAPP_COMPOSE.parent, step=step)
+            if not ok:
+                any_fail = True
+                step.write((out or "")[-400:] or "xApp compose down non-zero")
+            step.finish(True, "stopped" if ok else "stopped (with warnings)")
+        else:
+            step.finish(True, "no xApp compose")
+
+    if with_core:
+        step = next_step("Stop 5GC")
+        if not CORE_COMPOSE.is_file():
+            step.finish(False, f"missing {CORE_COMPOSE}")
+            return 1
+        ok, out = compose_down(CORE_COMPOSE, cwd=CORE_COMPOSE.parent, step=step)
+        if not ok:
+            any_fail = True
+            step.write((out or "")[-400:] or "5GC compose down non-zero")
+        step.finish(True, "stopped" if ok else "stopped (with warnings)")
+
+    print("OK: stack down" + (" (with warnings)" if any_fail else ""))
+    return 0
+
+
 def ensure_gnb(
     *,
     compose: Path,
@@ -956,8 +1050,15 @@ def wait_ping(
 
 def main() -> int:
     ap = argparse.ArgumentParser(
-        description="Bring up 5GC + nearRT-RIC + gNB + N UEs and verify PDU ping",
+        description="Bring up / tear down 5GC + nearRT-RIC + gNB + N UEs",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    ap.add_argument(
+        "command",
+        nargs="?",
+        choices=["up", "down"],
+        default="up",
+        help="up: bring stack up (default); down: tear down RAN (+ RIC; optional 5GC)",
     )
     ap.add_argument(
         "--ues",
@@ -991,7 +1092,16 @@ def main() -> int:
     )
     ap.add_argument("--ping-host", default=DEFAULT_PING_HOST, help="L3 ping target via oaitun (UPF)")
     ap.add_argument("--skip-core", action="store_true", help="Do not start 5GC if missing")
-    ap.add_argument("--no-ric", action="store_true", help="Do not start nearRT-RIC (FlexRIC)")
+    ap.add_argument(
+        "--no-ric",
+        action="store_true",
+        help="up: do not start nearRT-RIC; down: skip xApp RIC compose down",
+    )
+    ap.add_argument(
+        "--with-core",
+        action="store_true",
+        help="With 'down': also stop 5GC (nws-5gc)",
+    )
     ap.add_argument("--no-down-first", action="store_true", help="Skip RAN compose down before up")
     ap.add_argument(
         "--build",
@@ -1009,6 +1119,14 @@ def main() -> int:
     ap.add_argument("--ping-attempts", type=int, default=24, help="Ping retry attempts per UE")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
+
+    if args.command == "down":
+        return bring_down(
+            with_core=args.with_core,
+            with_ric=not args.no_ric,
+            verbose=args.verbose,
+        )
+
     args.build = args.build or args.force_rebuild_oai
     args.no_build = not args.build
     sch = args.sch  # already canonical via parse_sch
