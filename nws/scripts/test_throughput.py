@@ -10,8 +10,8 @@ Examples:
   python3 test_throughput.py --dir ul
   python3 test_throughput.py --dir dl --mode parallel
   python3 test_throughput.py --dir both --mode sequential --time 20
-  python3 test_throughput.py --tmux --dir ul          # UL: panes show server on core
-  python3 test_throughput.py --tmux --dir dl          # DL: panes show UE client (-R)
+  python3 test_throughput.py --tmux --dir ul          # 2 windows: server | client
+  python3 test_throughput.py --tmux --dir dl          # 2 windows: server | client (-R)
   # Two terminals (UDP UL+DL): different ports 520x / 530x — do not use --dir both with --tmux
   #   T1: ./test_throughput.py --tmux --dir ul -u
   #   T2: ./test_throughput.py --tmux --dir dl -u
@@ -548,37 +548,17 @@ def forever_iperf_cmd(
     return ["bash", "-lc", script]
 
 
-def forever_ul_server_cmd(
-    container: str,
+def forever_server_cmd(
     *,
     core: str,
-    server: str,
     port: int,
-    bind_ip: Optional[str],
     bind_server: Optional[str],
-    udp: bool,
-    bitrate: Optional[str],
-    streams: int,
-    retry_delay: float,
     interval: float,
+    retry_delay: float,
     session: str,
+    label: str,
 ) -> list[str]:
-    """UL pane: foreground iperf3 server on core (receiver stats); UE client in background."""
-    client = build_iperf_client_cmd(
-        server=server,
-        port=port,
-        duration=0,
-        reverse=False,
-        bind_ip=bind_ip,
-        udp=udp,
-        bitrate=bitrate,
-        streams=streams,
-        interval=interval,
-    )
-    # Client: no -t TTY so its interval spam does not fight the server pane.
-    client_docker = ["docker", "exec", container, *client]
-    client_q = " ".join(shlex.quote(a) for a in client_docker)
-
+    """Server window pane: foreground iperf3 -s on core."""
     server_parts = ["iperf3", "-s", "-p", str(port), "-i", str(interval)]
     if bind_server:
         server_parts[1:1] = ["-B", bind_server]
@@ -586,22 +566,16 @@ def forever_ul_server_cmd(
     server_docker_q = (
         f"docker exec -t {shlex.quote(core)} bash -lc {shlex.quote(server_inner)}"
     )
-
     cleanup = (
-        f"docker exec {shlex.quote(container)} "
-        f"bash -c 'pkill -9 -f \"iperf3.*-p {port}\" 2>/dev/null || true' >/dev/null 2>&1 || true; "
         f"docker exec {shlex.quote(core)} "
         f"bash -c 'pkill -9 -f \"iperf3.*-p {port}\" 2>/dev/null || true' >/dev/null 2>&1 || true"
     )
     sess = shlex.quote(session)
-    label = f"{container} UL server {core}:{port}"
     script = (
         f"cleanup() {{ {cleanup}; }}; "
         f"stop_all() {{ "
         f"trap - EXIT INT TERM; "
-        f'[ -n "${{cpid:-}}" ] && kill "$cpid" 2>/dev/null; '
         f'[ -n "${{spid:-}}" ] && kill "$spid" 2>/dev/null; '
-        f"wait \"$cpid\" 2>/dev/null; "
         f"wait \"$spid\" 2>/dev/null; "
         f"cleanup; "
         f"tmux kill-session -t {sess} 2>/dev/null || true; "
@@ -609,14 +583,8 @@ def forever_ul_server_cmd(
         f"}}; "
         f"trap stop_all INT TERM; "
         f"trap cleanup EXIT; "
-        f"echo '=== {label} (receiver view; UE client in background; "
-        f"report every {interval:g}s; Ctrl-C stops all) ==='; "
-        # Background forever client (retry until server is up / after disconnect).
-        f"( while true; do {client_q} >/dev/null 2>&1; "
-        f"echo \"=== {container} UL client exited; retry in {retry_delay}s ===\"; "
-        f"sleep {retry_delay}; done ) & "
-        f"cpid=$!; "
-        # Foreground server on core — this is what the pane shows.
+        f"echo '=== {label} server on {core}:{port} "
+        f"(report every {interval:g}s; Ctrl-C stops all) ==='; "
         f"while true; do "
         f"{server_docker_q} & "
         f"spid=$!; "
@@ -624,14 +592,27 @@ def forever_ul_server_cmd(
         f"rc=$?; "
         f"spid=; "
         f'if [ "$rc" -eq 130 ] || [ "$rc" -gt 128 ]; then '
-        f'echo "=== {label} interrupted (rc=$rc); stopping ==="; '
+        f'echo "=== {label} server interrupted (rc=$rc); stopping ==="; '
         f"stop_all; "
         f"fi; "
-        f'echo "=== {label} exited rc=$rc; retry in {retry_delay}s ==="; '
+        f'echo "=== {label} server exited rc=$rc; retry in {retry_delay}s ==="; '
         f"sleep {retry_delay}; "
         f"done"
     )
     return ["bash", "-lc", script]
+
+
+def _tmux_tiled(session: str, window: str, cmds: list[list[str]]) -> None:
+    """Create or fill a window with one tiled pane per command."""
+    if not cmds:
+        raise ValueError("no pane commands")
+    target = f"{session}:{window}"
+    first, *rest = cmds
+    # Caller creates the window / session with the first command already.
+    for cmd in rest:
+        subprocess.run(["tmux", "split-window", "-t", target, *cmd], check=True)
+        subprocess.run(["tmux", "select-layout", "-t", target, "tiled"], check=False)
+    subprocess.run(["tmux", "select-layout", "-t", target, "tiled"], check=False)
 
 
 def _tmux_session_alive(session: str) -> bool:
@@ -665,27 +646,22 @@ def open_tmux(
         subprocess.run(["tmux", "kill-session", "-t", session], check=False)
         clear_iperf3(containers, ports=list(ports.values()), core=core, quiet=True)
 
-    # UL: show server (receiver) on core. DL: show client on UE (-R).
-    show_server = direction == "UL"
     reverse = direction == "DL"
 
-    def pane_cmd(cname: str) -> list[str]:
-        if show_server:
-            return forever_ul_server_cmd(
-                cname,
-                core=core,
-                server=server,
-                port=ports[cname],
-                bind_ip=bind_ips.get(cname),
-                bind_server=bind_server,
-                udp=udp,
-                bitrate=bitrate,
-                streams=streams,
-                retry_delay=retry_delay,
-                interval=interval,
-                session=session,
-            )
-        return forever_iperf_cmd(
+    server_cmds = [
+        forever_server_cmd(
+            core=core,
+            port=ports[cname],
+            bind_server=bind_server,
+            interval=interval,
+            retry_delay=retry_delay,
+            session=session,
+            label=cname,
+        )
+        for cname in containers
+    ]
+    client_cmds = [
+        forever_iperf_cmd(
             cname,
             server=server,
             port=ports[cname],
@@ -698,24 +674,52 @@ def open_tmux(
             interval=interval,
             session=session,
         )
+        for cname in containers
+    ]
 
-    first = containers[0]
+    # Window 1: server (iperf3 -s on core). Window 2: client (UE iperf3).
     subprocess.run(
-        ["tmux", "new-session", "-d", "-s", session, "-n", "ue", *pane_cmd(first)],
+        ["tmux", "new-session", "-d", "-s", session, "-n", "server", *server_cmds[0]],
         check=True,
     )
-    for cname in containers[1:]:
-        subprocess.run(["tmux", "split-window", "-t", f"{session}:ue", *pane_cmd(cname)], check=True)
-        subprocess.run(["tmux", "select-layout", "-t", f"{session}:ue", "tiled"], check=False)
+    _tmux_tiled(session, "server", server_cmds)
 
-    subprocess.run(["tmux", "select-layout", "-t", f"{session}:ue", "tiled"], check=False)
-    subprocess.run(["tmux", "set-option", "-t", session, "mouse", "on"], check=False)
-    view = f"server panes on {core}" if show_server else f"client panes on UEs"
-    print(
-        f"tmux session: {session}  |  {len(containers)} pane(s), "
-        f"{direction} forever ({view}) -> {server}  (-i {interval:g}s)"
+    # Brief pause so servers bind before clients connect.
+    time.sleep(0.5)
+
+    subprocess.run(
+        ["tmux", "new-window", "-t", session, "-n", "client", *client_cmds[0]],
+        check=True,
     )
-    print("Ctrl-C in any pane stops all UEs and clears iperf3")
+    _tmux_tiled(session, "client", client_cmds)
+
+    subprocess.run(["tmux", "set-option", "-t", session, "mouse", "on"], check=False)
+    # Force a visible window status bar (user configs often set status off).
+    for opt, val in (
+        ("status", "on"),
+        ("status-position", "bottom"),
+        ("status-interval", "1"),
+        ("status-style", "bg=colour235,fg=colour250"),
+        ("status-left-length", "40"),
+        ("status-right-length", "60"),
+        ("status-left", f"#[bold]{session} {direction} #[default]| "),
+        ("status-right", " #[fg=colour244]Ctrl-B 0/1=server/client"),
+    ):
+        subprocess.run(["tmux", "set-option", "-t", session, opt, val], check=False)
+    for opt, val in (
+        ("window-status-format", " #I:#W "),
+        ("window-status-current-format", "#[bg=colour39,fg=black,bold] #I:#W #[default]"),
+        ("window-status-separator", ""),
+    ):
+        subprocess.run(["tmux", "set-option", "-w", "-t", session, opt, val], check=False)
+    subprocess.run(["tmux", "select-window", "-t", f"{session}:server"], check=False)
+
+    print(
+        f"tmux session: {session}  |  windows: server | client  "
+        f"({len(containers)} pane(s) each), {direction} forever -> {server}  "
+        f"(-i {interval:g}s)"
+    )
+    print("Status bar: 0:server | 1:client  —  Ctrl-B then 0/1 to switch; Ctrl-C stops all")
     print(f"Also: tmux kill-session -t {session}")
 
     def _stop_test(_signum=None, _frame=None) -> None:
@@ -820,7 +824,7 @@ def main() -> int:
     ap.add_argument(
         "--tmux",
         action="store_true",
-        help="One pane per UE, iperf forever (UL: server view on core; DL: UE client -R)",
+        help="Two tmux windows: server (iperf3 -s on core) then client (UE iperf3); forever",
     )
     ap.add_argument("--session", default="nws_iperf", help="tmux session name")
     ap.add_argument("--retry-delay", type=float, default=1.0, help="tmux forever retry delay")
@@ -936,12 +940,15 @@ def main() -> int:
     clear_iperf3(containers, ports=server_ports, quiet=True)
 
     if not args.skip_server:
-        # UL+tmux: foreground iperf3 -s runs in each pane (receiver view).
-        # DL+tmux / non-tmux: daemon servers in core as before.
-        if args.tmux and direction == "UL":
+        # tmux: foreground iperf3 -s in window "server" (both UL and DL).
+        # non-tmux: daemon servers in core as before.
+        if args.tmux:
             clear_iperf3(containers, ports=server_ports, core=args.core, quiet=True)
-            print(f"UL tmux: iperf3 servers will run in panes on {args.core} "
-                  f"(ports {', '.join(str(p) for p in server_ports)})")
+            print(
+                f"tmux: window server = iperf3 -s on {args.core} "
+                f"(ports {', '.join(str(p) for p in server_ports)}); "
+                f"window client = UE iperf3"
+            )
         elif not ensure_iperf_servers(args.core, server_ports, bind_server):
             return 1
 

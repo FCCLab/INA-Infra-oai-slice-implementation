@@ -15,8 +15,8 @@ Older utilities live under `old/` and `test_scripts/`.
 
 ```bash
 cd nws/scripts
-./bringup.py                  # 5 UEs, NS UL (stable default)
-./bringup.py --sch NSBOTH     # experimental DL+UL NS (see known issue below)
+./bringup.py                  # 5 UEs, NSBOTH, 133 PRB
+./bringup.py --sch NSUL       # UL-only NS
 ./test_ping.py
 ./test_throughput.py --dir both
 
@@ -27,10 +27,11 @@ cd xapp && docker compose up --build
 ## `bringup.py`
 
 ```bash
-./bringup.py                         # defaults below
+./bringup.py                         # defaults: 5 UEs, NSBOTH, 133 PRB
 ./bringup.py --ues 3 --sch NSUL
 ./bringup.py --ues 5 --sch NSDL
-./bringup.py --ues 5 --sch NSBOTH    # experimental
+./bringup.py --split                 # CU/DU/CU-UP (same sch/bw defaults)
+./bringup.py --sch NSUL --split --bw 106
 ./bringup.py --ues 2 --sch PF
 ./bringup.py --no-build              # skip image rebuild
 ./bringup.py --no-ric                # skip FlexRIC
@@ -40,7 +41,7 @@ cd xapp && docker compose up --build
 | Flag | Default | Notes |
 |------|---------|--------|
 | `--ues` | `5` | 1..5 |
-| `--sch` | `NSUL` | `NS`/`NSUL`, `NSDL`, `NSBOTH`/`BOTH`, `PF` |
+| `--sch` | `NSBOTH` | `NSBOTH`/`BOTH`, `NS`/`NSUL`, `NSDL`, `PF` |
 | `--no-build` | off | Skip OAI recompile + compose `--build` |
 | `--force-rebuild-oai` | off | `docker build --no-cache` for `ran-build` + `oai-gnb` |
 | `--ping-host` | `10.45.0.1` | UPF via oaitun |
@@ -49,9 +50,9 @@ cd xapp && docker compose up --build
 
 | Value | DL | UL | Status |
 |-------|----|----|--------|
-| `NS` / `NSUL` (default) | PF | NS | **stable** (lab default) |
+| `NSBOTH` / `BOTH` (default) | NS | NS | experimental; same DL fix as NSDL |
+| `NS` / `NSUL` | PF | NS | stable |
 | `NSDL` | NS | PF | needs gNB rebuild with DL `remainUEs` fix |
-| `NSBOTH` / `BOTH` | NS | NS | experimental; same DL fix as NSDL |
 | `PF` | PF | PF | stable |
 
 Compose/YAML base for 5 UEs is `docker-compose.open5gs.5slices.nsul.yaml` +

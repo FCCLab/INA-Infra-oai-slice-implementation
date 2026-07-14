@@ -2,14 +2,16 @@
 """
 Bring up Open5GS 5GC + nearRT-RIC + OAI gNB + N UEs (rfsim), then verify PDU ping.
 
-Defaults: 5 UEs, NS UL + PF DL (docker-compose.open5gs.5slices.nsul.yaml).
+Defaults: 5 UEs, NS BOTH (DL+UL NS), 133 PRB (docker-compose.open5gs.5slices.nsul.133prb.yaml base).
 
 Examples:
-  python3 bringup.py                         # NSUL; rebuilds OAI gNB if sources newer
-  python3 bringup.py --ues 5 --sch NSDL
+  python3 bringup.py                         # NSBOTH @ 133 PRB; rebuilds OAI if --build
+  python3 bringup.py --ues 5 --sch NSUL
   python3 bringup.py --force-rebuild-oai     # docker --no-cache rebuild ran-build + oai-gnb
   python3 bringup.py --no-build              # skip OAI recompile and compose --build
   python3 bringup.py --ues 2 --sch PF
+  python3 bringup.py --sch NSBOTH --split --bw 133  # 5 UE CU/DU/CU-UP @ 133 PRB
+  python3 bringup.py --sch NSUL --split --bw 106    # 3 UE CU/DU/CU-UP @ 106 PRB
   python3 bringup.py --skip-core
   python3 bringup.py --no-ric
   python3 bringup.py --no-ping
@@ -40,10 +42,41 @@ XAPP_COMPOSE = SCRIPT_DIR / "xapp" / "docker-compose.yml"
 CORE_SERVICE = "nws-5gc"
 GNB_SERVICE = "nws-oai-gnb"
 RIC_SERVICE = "nws-nearRT-RIC"
+# CU/DU split (F1/E1): static compose + DU yaml. Key = (bw_prb, sch).
+# Value = (compose file, DU yaml under configs/gnb/, max_ues)
+SPLIT_STACKS: dict[tuple[int, str], tuple[str, str, int]] = {
+    (106, "NSUL"): (
+        "docker-compose.open5gs.3slices.nsul.split.yaml",
+        "gnb.du.sa.band78.106prb.rfsim.open5gs.3slices.nsul.yaml",
+        3,
+    ),
+    (106, "NSBOTH"): (
+        "docker-compose.open5gs.3slices.nsboth.split.yaml",
+        "gnb.du.sa.band78.106prb.rfsim.open5gs.3slices.nsboth.yaml",
+        3,
+    ),
+    (133, "NSUL"): (
+        "docker-compose.open5gs.5slices.nsul.133prb.split.yaml",
+        "gnb.du.sa.band78.133prb.rfsim.open5gs.5slices.nsul.yaml",
+        5,
+    ),
+    (133, "NSBOTH"): (
+        "docker-compose.open5gs.5slices.nsboth.133prb.split.yaml",
+        "gnb.du.sa.band78.133prb.rfsim.open5gs.5slices.nsboth.yaml",
+        5,
+    ),
+}
+SPLIT_SERVICES = ("nws-oai-du", "nws-oai-cu-cp", "nws-oai-cu-up")
+SPLIT_PROC = {
+    "nws-oai-du": "nr-softmodem",
+    "nws-oai-cu-cp": "nr-softmodem",
+    "nws-oai-cu-up": "nr-cuup",
+}
 DEFAULT_PING_HOST = "10.45.0.1"
 # Compose --build only packages ran-build:latest; these scripts recompile OAI.
 BUILD_RAN_BUILD_SH = BUILD_SCRIPTS_DIR / "build_ran_build.sh"
 BUILD_OAI_GNB_SH = BUILD_SCRIPTS_DIR / "build_oai_gnb.sh"
+BUILD_OAI_NR_CUUP_SH = BUILD_SCRIPTS_DIR / "build_oai_nr_cuup.sh"
 
 # UE index 1..5 — static PDU IPs from Open5GS subscriber DB / nrue UICC configs
 UES: list[dict[str, str]] = [
@@ -435,6 +468,25 @@ def rebuild_oai_gnb(*, step: Step, force: bool = False) -> bool:
     return step.finish(True, f"ran-build + oai-gnb rebuilt ({reason})")
 
 
+def rebuild_oai_nr_cuup(*, step: Step, force: bool = False) -> bool:
+    """Build oai-nr-cuup image (needed for --split)."""
+    if not BUILD_OAI_NR_CUUP_SH.is_file():
+        return step.finish(False, f"missing {BUILD_OAI_NR_CUUP_SH}")
+    # build_oai_nr_cuup.sh does not accept --no-cache yet; always run the script.
+    _ = force
+    step.write("Running build_oai_nr_cuup.sh...")
+    ok, out = run_streamed(
+        ["bash", str(BUILD_OAI_NR_CUUP_SH)],
+        cwd=BUILD_SCRIPTS_DIR,
+        timeout=1800.0,
+        step=step,
+    )
+    if not ok:
+        step.write((out or "")[-2000:])
+        return step.finish(False, "build_oai_nr_cuup.sh failed")
+    return step.finish(True, "oai-nr-cuup rebuilt")
+
+
 def compose_up(
     compose_file: Path,
     services: list[str],
@@ -793,14 +845,20 @@ def ensure_gnb(
     timeout_s: float,
     build: bool,
     step: Step,
+    services: Optional[list[str]] = None,
+    proc_by_service: Optional[dict[str, str]] = None,
 ) -> bool:
-    ok, out = compose_up(compose, [GNB_SERVICE], cwd=COMPOSE_DIR, build=build, step=step)
+    services = services or [GNB_SERVICE]
+    proc_by_service = proc_by_service or {GNB_SERVICE: "nr-softmodem"}
+    ok, out = compose_up(compose, services, cwd=COMPOSE_DIR, build=build, step=step)
     if not ok:
         step.write((out or "")[-2000:] or "compose up failed")
         return step.finish(False, "compose up failed")
-    if not wait_process(GNB_SERVICE, "nr-softmodem", min(timeout_s, 180.0), log, step=step):
-        return step.finish(False, "nr-softmodem not found")
-    return step.finish(True, GNB_SERVICE)
+    for name in services:
+        proc = proc_by_service.get(name, "nr-softmodem")
+        if not wait_process(name, proc, min(timeout_s, 180.0), log, step=step):
+            return step.finish(False, f"{name}: {proc} not found")
+    return step.finish(True, "+".join(services))
 
 
 def ensure_ues(
@@ -917,11 +975,18 @@ def main() -> int:
     ap.add_argument(
         "--sch",
         type=parse_sch,
-        default="NSUL",
+        default="NSBOTH",
         help=(
-            "gNB scheduler: NS/NSUL (UL NS, default), NSDL (DL NS), "
-            "NSBOTH/BOTH (DL+UL NS, unstable in rfsim — see scripts/readme.md), "
-            "or PF (both PF)"
+            "gNB scheduler: NSBOTH/BOTH (DL+UL NS, default), NS/NSUL (UL NS), "
+            "NSDL (DL NS), or PF (both PF)"
+        ),
+    )
+    ap.add_argument(
+        "--split",
+        action="store_true",
+        help=(
+            "CU-CP + CU-UP + DU split (F1/E1): static *.split compose "
+            "(106 PRB: 3 UEs; 133 PRB: 5 UEs). sch=NSUL|NSBOTH — no runtime YAML patch"
         ),
     )
     ap.add_argument("--ping-host", default=DEFAULT_PING_HOST, help="L3 ping target via oaitun (UPF)")
@@ -957,21 +1022,44 @@ def main() -> int:
         return 1
 
     compose_name, gnb_name = RAN_BY_UES[args.ues]
-    if args.bw == 133:
+    gnb_services = [GNB_SERVICE]
+    gnb_procs = {GNB_SERVICE: "nr-softmodem"}
+    if args.split:
+        key = (args.bw, sch)
+        if key not in SPLIT_STACKS:
+            supported = ", ".join(f"{bw}PRB/{s}" for bw, s in sorted(SPLIT_STACKS))
+            print(
+                f"FAIL: --split does not support bw={args.bw} sch={sch}; "
+                f"supported: {supported}",
+                flush=True,
+            )
+            return 1
+        compose_name, gnb_name, max_ues = SPLIT_STACKS[key]
+        if args.ues > max_ues:
+            print(
+                f"NOTE: --split {args.bw}PRB/{sch} has {max_ues} UEs; "
+                f"clamping --ues {args.ues} -> {max_ues}",
+                flush=True,
+            )
+            args.ues = max_ues
+        gnb_services = list(SPLIT_SERVICES)
+        gnb_procs = dict(SPLIT_PROC)
+    elif args.bw == 133:
         if args.ues == 5:
             compose_name = "docker-compose.open5gs.5slices.nsul.133prb.yaml"
             gnb_name = "gnb.sa.band78.133prb.rfsim.open5gs.5slices.nsul.yaml"
         else:
             raise ValueError("133 PRB configuration is only supported for 5 UEs (5 slices).")
 
-    if sch == "PF" and args.ues in PF_DEDICATED:
-        if args.bw == 133:
-            raise ValueError("PF scheduler is not supported with 133 PRB configuration.")
-        compose_name, gnb_name = PF_DEDICATED[args.ues]
-    elif sch == "NSDL" and args.ues in NSDL_DEDICATED:
-        if args.bw == 133:
-            raise ValueError("NSDL scheduler is not supported with 133 PRB configuration.")
-        compose_name, gnb_name = NSDL_DEDICATED[args.ues]
+    if not args.split:
+        if sch == "PF" and args.ues in PF_DEDICATED:
+            if args.bw == 133:
+                raise ValueError("PF scheduler is not supported with 133 PRB configuration.")
+            compose_name, gnb_name = PF_DEDICATED[args.ues]
+        elif sch == "NSDL" and args.ues in NSDL_DEDICATED:
+            if args.bw == 133:
+                raise ValueError("NSDL scheduler is not supported with 133 PRB configuration.")
+            compose_name, gnb_name = NSDL_DEDICATED[args.ues]
     compose = COMPOSE_DIR / compose_name
     gnb_src = GNB_CFG_DIR / gnb_name
     if not compose.is_file():
@@ -994,9 +1082,11 @@ def main() -> int:
     steps_plan.append("Start 5GC")
     if not args.no_build:
         steps_plan.append("Build OAI gNB")
+        if args.split:
+            steps_plan.append("Build OAI CU-UP")
     if with_ric:
         steps_plan.append("Start nearRT-RIC")
-    steps_plan.append("Start gNB")
+    steps_plan.append("Start gNB" if not args.split else "Start DU/CU-CP/CU-UP")
     steps_plan.append("Start UEs")
     if do_ping:
         steps_plan.append("PDU attach")
@@ -1012,6 +1102,7 @@ def main() -> int:
     print(
         f"Bringup: ues={args.ues} sch={sch} "
         f"(DL={sched_label(dl_i)} UL={sched_label(ul_i)}) "
+        f"split={'yes' if args.split else 'no'} "
         f"ric={'yes' if with_ric else 'no'} "
         f"build={'no' if args.no_build else ('force' if args.force_rebuild_oai else 'yes')} "
         f"compose={compose.name} gnb={gnb_src.name}",
@@ -1023,14 +1114,16 @@ def main() -> int:
     gnb_effective = gnb_src
     try:
         # Patch scheduler when the selected stack YAML does not already match.
+        # --split uses dedicated static compose/YAML per sch (no temp patch).
         need_patch = False
-        if sch == "PF" and args.ues not in PF_DEDICATED:
-            need_patch = True
-        elif sch == "NSDL" and args.ues not in NSDL_DEDICATED:
-            need_patch = True
-        elif sch == "NSBOTH":
-            need_patch = True
-        # NSUL uses RAN_BY_UES nsul stacks as-is.
+        if not args.split:
+            if sch == "PF" and args.ues not in PF_DEDICATED:
+                need_patch = True
+            elif sch == "NSDL" and args.ues not in NSDL_DEDICATED:
+                need_patch = True
+            elif sch == "NSBOTH":
+                need_patch = True
+            # NSUL uses RAN_BY_UES nsul stacks as-is.
 
         if need_patch:
             tmpdir = tempfile.TemporaryDirectory(prefix="nws-bringup-")
@@ -1047,7 +1140,20 @@ def main() -> int:
             )
 
         if not args.no_down_first:
-            if not stop_prior_ran(compose=compose, with_ric=with_ric, step=next_step("Stop prior RAN")):
+            # Also tear down the other topology so mono/split do not collide.
+            split_names = {c for c, _, _ in SPLIT_STACKS.values()}
+            if args.split:
+                others = [COMPOSE_DIR / RAN_BY_UES[5][0], COMPOSE_DIR / "docker-compose.open5gs.5slices.nsul.133prb.yaml"] + [
+                    COMPOSE_DIR / n for n in split_names if n != compose.name
+                ]
+            else:
+                others = [COMPOSE_DIR / n for n in split_names]
+            step = next_step("Stop prior RAN")
+            for other in others:
+                if other.is_file() and other.resolve() != compose.resolve():
+                    step.write(f"also down {other.name}")
+                    compose_down(other, cwd=COMPOSE_DIR, step=step)
+            if not stop_prior_ran(compose=compose, with_ric=with_ric, step=step):
                 return 1
 
         if not ensure_core(log, args.timeout, args.skip_core, step=next_step("Start 5GC")):
@@ -1059,6 +1165,12 @@ def main() -> int:
                 force=args.force_rebuild_oai,
             ):
                 return 1
+            if args.split:
+                if not rebuild_oai_nr_cuup(
+                    step=next_step("Build OAI CU-UP"),
+                    force=args.force_rebuild_oai,
+                ):
+                    return 1
 
         if with_ric:
             if not ensure_ric(
@@ -1076,7 +1188,9 @@ def main() -> int:
             timeout_s=args.timeout,
             # Image already rebuilt above; compose --build only repackages ran-build.
             build=not args.no_build,
-            step=next_step("Start gNB"),
+            step=next_step("Start DU/CU-CP/CU-UP" if args.split else "Start gNB"),
+            services=gnb_services,
+            proc_by_service=gnb_procs,
         ):
             return 1
 
