@@ -12,6 +12,7 @@ Examples:
   python3 bringup.py --ues 2 --sch PF
   python3 bringup.py --sch NSBOTH --split --bw 133  # 5 UE CU/DU/CU-UP @ 133 PRB
   python3 bringup.py --sch NSUL --split --bw 106    # 3 UE CU/DU/CU-UP @ 106 PRB
+  python3 bringup.py --split-mult-upf-cuup --sch NSBOTH  # 5 CU-UP + 5 UPF (1 per slice)
   python3 bringup.py down                    # stop RAN + RIC (all known compose files)
   python3 bringup.py down --with-core        # also stop 5GC
   python3 bringup.py --skip-core
@@ -40,6 +41,7 @@ GNB_CFG_DIR = NWS_DIR / "configs" / "gnb"
 BUILD_SCRIPTS_DIR = NWS_DIR / "build_scripts"
 OAI_DIR = NETWORK_SLICING_DIR / "openairinterface5g"
 CORE_COMPOSE = NWS_DIR / "5gc" / "open5gs" / "docker-compose.yml"
+CORE_COMPOSE_MULT = NWS_DIR / "5gc" / "open5gs" / "docker-compose.mult-upf.yml"
 XAPP_COMPOSE = SCRIPT_DIR / "xapp" / "docker-compose.yml"
 CORE_SERVICE = "nws-5gc"
 GNB_SERVICE = "nws-oai-gnb"
@@ -68,11 +70,36 @@ SPLIT_STACKS: dict[tuple[int, str], tuple[str, str, int]] = {
         5,
     ),
 }
+# Per-slice multi-UPF + multi-CU-UP (133 PRB / 5 UEs only).
+SPLIT_MULT_STACKS: dict[str, tuple[str, str]] = {
+    "NSUL": (
+        "docker-compose.open5gs.5slices.nsul.133prb.split.mult.yaml",
+        "gnb.du.sa.band78.133prb.rfsim.open5gs.5slices.nsul.yaml",
+    ),
+    "NSBOTH": (
+        "docker-compose.open5gs.5slices.nsboth.133prb.split.mult.yaml",
+        "gnb.du.sa.band78.133prb.rfsim.open5gs.5slices.nsboth.yaml",
+    ),
+}
 SPLIT_SERVICES = ("nws-oai-du", "nws-oai-cu-cp", "nws-oai-cu-up")
+SPLIT_MULT_SERVICES = (
+    "nws-oai-du",
+    "nws-oai-cu-cp",
+    "nws-oai-cu-up1",
+    "nws-oai-cu-up2",
+    "nws-oai-cu-up3",
+    "nws-oai-cu-up4",
+    "nws-oai-cu-up5",
+)
 SPLIT_PROC = {
     "nws-oai-du": "nr-softmodem",
     "nws-oai-cu-cp": "nr-softmodem",
     "nws-oai-cu-up": "nr-cuup",
+}
+SPLIT_MULT_PROC = {
+    "nws-oai-du": "nr-softmodem",
+    "nws-oai-cu-cp": "nr-softmodem",
+    **{f"nws-oai-cu-up{i}": "nr-cuup" for i in range(1, 6)},
 }
 DEFAULT_PING_HOST = "10.45.0.1"
 # Compose --build only packages ran-build:latest; these scripts recompile OAI.
@@ -757,12 +784,50 @@ def ensure_core(
     timeout_s: float,
     skip: bool,
     step: Step,
+    core_compose: Optional[Path] = None,
 ) -> bool:
+    core_compose = core_compose or CORE_COMPOSE
+    want_mult = core_compose.resolve() == CORE_COMPOSE_MULT.resolve()
     if container_running(CORE_SERVICE) and container_health(CORE_SERVICE) in ("healthy", "none", None):
-        return step.finish(True, f"{CORE_SERVICE} already running")
+        if want_mult:
+            r = docker_exec(
+                CORE_SERVICE,
+                ["bash", "-c", "pgrep -c open5gs-upfd 2>/dev/null || echo 0"],
+                timeout=10,
+            )
+            try:
+                n_upf = int((r.stdout or "0").strip().splitlines()[-1])
+            except ValueError:
+                n_upf = 0
+            if n_upf >= 5:
+                return step.finish(True, f"{CORE_SERVICE} already running (multi-UPF, {n_upf} upfd)")
+            step.write(f"{CORE_SERVICE} running but upfd={n_upf} (<5); recreating multi-UPF 5GC")
+            compose_down(CORE_COMPOSE, cwd=CORE_COMPOSE.parent, step=step)
+            compose_down(CORE_COMPOSE_MULT, cwd=CORE_COMPOSE_MULT.parent, step=step)
+        else:
+            # Single-UPF mode: if multi upfds are present, recreate.
+            r = docker_exec(
+                CORE_SERVICE,
+                ["bash", "-c", "pgrep -c open5gs-upfd 2>/dev/null || echo 0"],
+                timeout=10,
+            )
+            try:
+                n_upf = int((r.stdout or "0").strip().splitlines()[-1])
+            except ValueError:
+                n_upf = 0
+            if n_upf <= 1:
+                return step.finish(True, f"{CORE_SERVICE} already running")
+            step.write(f"{CORE_SERVICE} has {n_upf} upfd; recreating single-UPF 5GC")
+            compose_down(CORE_COMPOSE, cwd=CORE_COMPOSE.parent, step=step)
+            compose_down(CORE_COMPOSE_MULT, cwd=CORE_COMPOSE_MULT.parent, step=step)
     if skip:
         return step.finish(False, "not running and --skip-core set")
-    ok, out = compose_up(CORE_COMPOSE, [CORE_SERVICE], cwd=CORE_COMPOSE.parent, step=step)
+    # Tear down the alternate 5GC compose so single/multi-UPF do not collide.
+    for other in (CORE_COMPOSE, CORE_COMPOSE_MULT):
+        if other.is_file() and other.resolve() != core_compose.resolve():
+            step.write(f"also down other 5GC compose {other.name}")
+            compose_down(other, cwd=other.parent, step=step)
+    ok, out = compose_up(core_compose, [CORE_SERVICE], cwd=core_compose.parent, step=step)
     if not ok:
         step.write(out[-2000:] if out else "compose up failed")
         return step.finish(False, "compose up failed")
@@ -852,6 +917,8 @@ def iter_ran_compose_files() -> list[Path]:
     names.add("docker-compose.open5gs.5slices.nsul.133prb.yaml")
     for compose_name, _, _ in SPLIT_STACKS.values():
         names.add(compose_name)
+    for compose_name, _ in SPLIT_MULT_STACKS.values():
+        names.add(compose_name)
     paths = [COMPOSE_DIR / n for n in sorted(names) if (COMPOSE_DIR / n).is_file()]
     paths.extend(sorted(COMPOSE_DIR.glob(".bringup-*.yaml")))
     # Deduplicate by resolve() while preserving order.
@@ -919,14 +986,20 @@ def bring_down(*, with_core: bool, with_ric: bool, verbose: bool) -> int:
 
     if with_core:
         step = next_step("Stop 5GC")
-        if not CORE_COMPOSE.is_file():
-            step.finish(False, f"missing {CORE_COMPOSE}")
+        any_core_ok = False
+        for core in (CORE_COMPOSE, CORE_COMPOSE_MULT):
+            if not core.is_file():
+                continue
+            step.write(f"down {core.name}")
+            ok, out = compose_down(core, cwd=core.parent, step=step)
+            any_core_ok = any_core_ok or ok
+            if not ok:
+                any_fail = True
+                step.write((out or "")[-400:] or f"{core.name}: compose down non-zero")
+        if not CORE_COMPOSE.is_file() and not CORE_COMPOSE_MULT.is_file():
+            step.finish(False, "missing 5GC compose")
             return 1
-        ok, out = compose_down(CORE_COMPOSE, cwd=CORE_COMPOSE.parent, step=step)
-        if not ok:
-            any_fail = True
-            step.write((out or "")[-400:] or "5GC compose down non-zero")
-        step.finish(True, "stopped" if ok else "stopped (with warnings)")
+        step.finish(True, "stopped" if any_core_ok and not any_fail else "stopped (with warnings)")
 
     print("OK: stack down" + (" (with warnings)" if any_fail else ""))
     return 0
@@ -1090,6 +1163,14 @@ def main() -> int:
             "(106 PRB: 3 UEs; 133 PRB: 5 UEs). sch=NSUL|NSBOTH — no runtime YAML patch"
         ),
     )
+    ap.add_argument(
+        "--split-mult-upf-cuup",
+        action="store_true",
+        help=(
+            "133 PRB / 5 UE split with 5 CU-UPs + 5 UPFs (one per S-NSSAI/DNN oai1..oai5). "
+            "Implies --split; sch=NSUL|NSBOTH only"
+        ),
+    )
     ap.add_argument("--ping-host", default=DEFAULT_PING_HOST, help="L3 ping target via oaitun (UPF)")
     ap.add_argument("--skip-core", action="store_true", help="Do not start 5GC if missing")
     ap.add_argument(
@@ -1132,17 +1213,44 @@ def main() -> int:
     sch = args.sch  # already canonical via parse_sch
     log = setup_log(args.verbose)
 
+    if args.split_mult_upf_cuup:
+        args.split = True
+        if sch not in SPLIT_MULT_STACKS:
+            print(
+                f"FAIL: --split-mult-upf-cuup requires sch=NSUL|NSBOTH (got {sch})",
+                flush=True,
+            )
+            return 1
+        if args.bw != 133:
+            print(
+                f"NOTE: --split-mult-upf-cuup is 133 PRB only; clamping --bw {args.bw} -> 133",
+                flush=True,
+            )
+            args.bw = 133
+        if args.ues != 5:
+            print(
+                f"NOTE: --split-mult-upf-cuup has 5 UEs; clamping --ues {args.ues} -> 5",
+                flush=True,
+            )
+            args.ues = 5
+
     if not docker_ok():
         print("FAIL: docker is not available", flush=True)
         return 1
-    if not CORE_COMPOSE.is_file():
-        print(f"FAIL: missing core compose: {CORE_COMPOSE}", flush=True)
+
+    core_compose = CORE_COMPOSE_MULT if args.split_mult_upf_cuup else CORE_COMPOSE
+    if not core_compose.is_file():
+        print(f"FAIL: missing core compose: {core_compose}", flush=True)
         return 1
 
     compose_name, gnb_name = RAN_BY_UES[args.ues]
     gnb_services = [GNB_SERVICE]
     gnb_procs = {GNB_SERVICE: "nr-softmodem"}
-    if args.split:
+    if args.split_mult_upf_cuup:
+        compose_name, gnb_name = SPLIT_MULT_STACKS[sch]
+        gnb_services = list(SPLIT_MULT_SERVICES)
+        gnb_procs = dict(SPLIT_MULT_PROC)
+    elif args.split:
         key = (args.bw, sch)
         if key not in SPLIT_STACKS:
             supported = ", ".join(f"{bw}PRB/{s}" for bw, s in sorted(SPLIT_STACKS))
@@ -1204,7 +1312,11 @@ def main() -> int:
             steps_plan.append("Build OAI CU-UP")
     if with_ric:
         steps_plan.append("Start nearRT-RIC")
-    steps_plan.append("Start gNB" if not args.split else "Start DU/CU-CP/CU-UP")
+    steps_plan.append(
+        "Start DU/CU-CP/5xCU-UP"
+        if args.split_mult_upf_cuup
+        else ("Start gNB" if not args.split else "Start DU/CU-CP/CU-UP")
+    )
     steps_plan.append("Start UEs")
     if do_ping:
         steps_plan.append("PDU attach")
@@ -1220,9 +1332,10 @@ def main() -> int:
     print(
         f"Bringup: ues={args.ues} sch={sch} "
         f"(DL={sched_label(dl_i)} UL={sched_label(ul_i)}) "
-        f"split={'yes' if args.split else 'no'} "
+        f"split={'mult-upf-cuup' if args.split_mult_upf_cuup else ('yes' if args.split else 'no')} "
         f"ric={'yes' if with_ric else 'no'} "
         f"build={'no' if args.no_build else ('force' if args.force_rebuild_oai else 'yes')} "
+        f"core={core_compose.name} "
         f"compose={compose.name} gnb={gnb_src.name}",
         flush=True,
     )
@@ -1258,14 +1371,21 @@ def main() -> int:
             )
 
         if not args.no_down_first:
-            # Also tear down the other topology so mono/split do not collide.
+            # Also tear down the other topology so mono/split/mult do not collide.
             split_names = {c for c, _, _ in SPLIT_STACKS.values()}
-            if args.split:
+            mult_names = {c for c, _ in SPLIT_MULT_STACKS.values()}
+            if args.split_mult_upf_cuup:
+                others = (
+                    [COMPOSE_DIR / RAN_BY_UES[5][0], COMPOSE_DIR / "docker-compose.open5gs.5slices.nsul.133prb.yaml"]
+                    + [COMPOSE_DIR / n for n in split_names]
+                    + [COMPOSE_DIR / n for n in mult_names if n != compose.name]
+                )
+            elif args.split:
                 others = [COMPOSE_DIR / RAN_BY_UES[5][0], COMPOSE_DIR / "docker-compose.open5gs.5slices.nsul.133prb.yaml"] + [
                     COMPOSE_DIR / n for n in split_names if n != compose.name
-                ]
+                ] + [COMPOSE_DIR / n for n in mult_names]
             else:
-                others = [COMPOSE_DIR / n for n in split_names]
+                others = [COMPOSE_DIR / n for n in split_names | mult_names]
             step = next_step("Stop prior RAN")
             for other in others:
                 if other.is_file() and other.resolve() != compose.resolve():
@@ -1274,7 +1394,13 @@ def main() -> int:
             if not stop_prior_ran(compose=compose, with_ric=with_ric, step=step):
                 return 1
 
-        if not ensure_core(log, args.timeout, args.skip_core, step=next_step("Start 5GC")):
+        if not ensure_core(
+            log,
+            args.timeout,
+            args.skip_core,
+            step=next_step("Start 5GC"),
+            core_compose=core_compose,
+        ):
             return 1
 
         if not args.no_build:
@@ -1306,7 +1432,11 @@ def main() -> int:
             timeout_s=args.timeout,
             # Image already rebuilt above; compose --build only repackages ran-build.
             build=not args.no_build,
-            step=next_step("Start DU/CU-CP/CU-UP" if args.split else "Start gNB"),
+            step=next_step(
+                "Start DU/CU-CP/5xCU-UP"
+                if args.split_mult_upf_cuup
+                else ("Start DU/CU-CP/CU-UP" if args.split else "Start gNB")
+            ),
             services=gnb_services,
             proc_by_service=gnb_procs,
         ):

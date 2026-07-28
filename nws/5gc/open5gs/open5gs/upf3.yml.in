@@ -1,0 +1,21 @@
+db_uri: mongodb://127.0.0.1/open5gs
+
+logger:
+  level: info
+
+global:
+  parameter:
+    no_ipv6: true
+
+upf:
+  pfcp:
+    server:
+      - address: 127.0.0.33
+  gtpu:
+    server:
+      - address: 10.53.1.5
+        advertise: 10.53.1.5
+  session:
+    - subnet: 10.45.0.0/24
+      gateway: 10.45.0.2
+      dnn: oai3

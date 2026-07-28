@@ -31,7 +31,10 @@ cd xapp && docker compose up --build
 ./bringup.py --ues 3 --sch NSUL
 ./bringup.py --ues 5 --sch NSDL
 ./bringup.py --split                 # CU/DU/CU-UP (same sch/bw defaults)
+./bringup.py --split-mult-upf-cuup   # 5 CU-UP + 5 UPF (one per slice); 133 PRB
 ./bringup.py --sch NSUL --split --bw 106
+./bringup.py down                    # stop RAN (+ RIC)
+./bringup.py down --with-core        # also stop 5GC
 ./bringup.py --ues 2 --sch PF
 ./bringup.py --no-build              # skip image rebuild
 ./bringup.py --no-ric                # skip FlexRIC

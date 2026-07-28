@@ -1,0 +1,15 @@
+uicc0:
+  imsi: 001010000000005
+  key: fec86ba6eb707ed08905757b1bb44b8f
+  opc: C42449363BBAD02B66D16BC975D77CC1
+  dnn: oai5
+  nssai_sst: 1
+  nssai_sd: 0x000005
+
+thread-pool: "-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1"
+
+rfsimulator:
+  serveraddr: 192.168.201.140
+
+log_config:
+  global_log_options: level,nocolor,time
