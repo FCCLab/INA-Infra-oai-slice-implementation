@@ -6,3 +6,6 @@
 	path = openairinterface5g
 	url = https://github.com/FCCLab/openairinterface5g.git
 	branch = nw-slicing-3gpp
+[submodule "oai-cn5g-fed"]
+	path = oai-cn5g-fed
+	url = https://gitlab.eurecom.fr/oai/cn5g/oai-cn5g-fed.git
