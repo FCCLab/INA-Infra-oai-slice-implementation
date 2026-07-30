@@ -8,4 +8,5 @@
 	branch = nw-slicing-3gpp
 [submodule "oai-cn5g-fed"]
 	path = oai-cn5g-fed
-	url = https://gitlab.eurecom.fr/oai/cn5g/oai-cn5g-fed.git
+	url = https://github.com/FCCLab/INA-Infra-oai-cn5g-fed.git
+	branch = main
