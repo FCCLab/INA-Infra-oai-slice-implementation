@@ -15,7 +15,7 @@ usage() {
     cat <<EOF
 Usage: $0 [OPTIONS]
 
-Build oai-smf Docker image from network-slicing/oai-cn5g-fed/component/oai-smf.
+Build oai-smf Docker image from INA-Infra-oai-slice-implementation/oai-cn5g-fed/component/oai-smf.
 
 Options:
   --no-cache          Pass docker build --no-cache
