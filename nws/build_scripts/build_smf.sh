@@ -8,7 +8,7 @@ SMF_DIR="${WORKSPACE_DIR}/oai-cn5g-fed/component/oai-smf"
 
 NO_CACHE=0
 # Bump suffix (-2, -3, ...) when rebuilding after SMF source changes.
-IMAGE_TAG="${IMAGE_TAG:-v2.2.1-dnn-fix-3}"
+IMAGE_TAG="${IMAGE_TAG:-v2.2.1-dnn-fix-4}"
 SKIP_SUBMODULES=0
 
 usage() {
@@ -19,12 +19,12 @@ Build oai-smf Docker image from INA-Infra-oai-slice-implementation/oai-cn5g-fed/
 
 Options:
   --no-cache          Pass docker build --no-cache
-  --tag TAG           Image tag (default: v2.2.1-dnn-fix-3; bump -4, -5, ...)
+  --tag TAG           Image tag (default: v2.2.1-dnn-fix-4; bump -5, ...)
   --skip-submodules   Do not run git submodule update --init
   -h, --help          Show this help
 
 Environment:
-  IMAGE_TAG           Same as --tag (default: v2.2.1-dnn-fix-3)
+  IMAGE_TAG           Same as --tag (default: v2.2.1-dnn-fix-4)
 
 Output tags:
   oai-smf:\$TAG
