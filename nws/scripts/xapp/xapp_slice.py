@@ -6,6 +6,10 @@ Subscribes to E2 Slice SM (RAN func 145) indications (`ind.ns_policy`) and
 exposes a small HTTP API to GET / SET NS dedicated/min/max ratios via
 `control_ns_slice_policy`.
 
+GET overlays the last successful SET when Slice SM indications stall (CONTROL
+can keep working while the indication subscription freezes). A watchdog
+re-subscribes the report when indications go stale.
+
 Examples:
   python3 xapp_slice.py --print --api-port 8080
   curl -s http://192.168.201.143:8080/api/v1/slices | jq .
@@ -327,6 +331,7 @@ class MonitorState:
         self.quiet = quiet
         self.count = 0
         self.last: Optional[dict[str, Any]] = None
+        self.last_ind_at: Optional[float] = None
         self._last_ns_key: Optional[str] = None
         self.lock = threading.Lock()
 
@@ -335,6 +340,7 @@ class MonitorState:
         with self.lock:
             self.count += 1
             self.last = data
+            self.last_ind_at = time.monotonic()
             ns = data.get("ns_policy") or []
             count = self.count
         ns_view = {"tstamp": data.get("tstamp"), "slices": ns}
@@ -369,15 +375,70 @@ class MonitorState:
                 flush=True,
             )
 
+    def indication_age_sec(self) -> Optional[float]:
+        with self.lock:
+            if self.last_ind_at is None:
+                return None
+            return max(0.0, time.monotonic() - self.last_ind_at)
+
+    def apply_desired(self, slices: list[dict[str, Any]]) -> None:
+        """Optimistic NS policy update after a successful E2 SET.
+
+        Slice SM indications can stall while CONTROL still works. Keep GET
+        coherent by writing the desired policy into the local snapshot.
+        """
+        cleaned: list[dict[str, Any]] = []
+        for e in slices:
+            cleaned.append(
+                {
+                    "sst": int(e["sst"]),
+                    "sd": _fmt_sd(parse_sd(e["sd"])),
+                    "direction": str(e["direction"]).lower(),
+                    "dedicated": float(e["dedicated"]),
+                    "min": float(e["min"]),
+                    "max": float(e["max"]),
+                }
+            )
+        with self.lock:
+            base = dict(self.last) if self.last else {"tstamp": None, "flexric": {}}
+            # Preserve default-slice rows from the last indication if present.
+            prev = list(base.get("ns_policy") or [])
+            keep_default = [
+                e
+                for e in prev
+                if parse_sd(e.get("sd", 0)) == NS_DEFAULT_SD
+            ]
+            # Replace non-default rows with desired SET payload.
+            ns = keep_default + [
+                e for e in cleaned if parse_sd(e["sd"]) != NS_DEFAULT_SD
+            ]
+            base["ns_policy"] = ns
+            base["slices"] = ns
+            base["desired_at"] = time.time()
+            self.last = base
+
     def snapshot(self) -> dict[str, Any]:
         with self.lock:
+            age = (
+                None
+                if self.last_ind_at is None
+                else max(0.0, time.monotonic() - self.last_ind_at)
+            )
             if self.last is None:
-                return {"tstamp": None, "slices": [], "indications": self.count}
+                return {
+                    "tstamp": None,
+                    "slices": [],
+                    "indications": self.count,
+                    "indication_age_sec": age,
+                    "source": "none",
+                }
             ns = list(self.last.get("ns_policy") or [])
             return {
                 "tstamp": self.last.get("tstamp"),
                 "slices": ns,
                 "indications": self.count,
+                "indication_age_sec": age,
+                "source": "indication",
             }
 
 
@@ -506,6 +567,10 @@ def parse_slices_body(body: Any) -> list[dict[str, Any]]:
 
 
 class SliceController:
+    # If Slice SM indications stop arriving this long, prefer last SET for merge
+    # and attempt a re-subscribe from the main loop.
+    INDICATION_STALE_SEC = 15.0
+
     def __init__(self, ric: Any, node_id: Any, state: MonitorState) -> None:
         self.ric = ric
         self.node_id = node_id
@@ -513,8 +578,74 @@ class SliceController:
         self.lock = threading.Lock()
         self.last_set: Optional[dict[str, Any]] = None
 
+    @staticmethod
+    def _entry_key(e: dict[str, Any]) -> tuple[int, str, str]:
+        return (
+            int(e["sst"]),
+            _fmt_sd(parse_sd(e["sd"])),
+            str(e["direction"]).lower(),
+        )
+
     def get_slices(self) -> dict[str, Any]:
-        return self.state.snapshot()
+        snap = self.state.snapshot()
+        with self.lock:
+            last_set = dict(self.last_set) if self.last_set else None
+        sent = list((last_set or {}).get("sent") or [])
+        if not sent:
+            return snap
+
+        # Overlay last successful SET onto indication/desired snapshot so GET
+        # stays accurate when indications stall after CONTROL ACK.
+        by_key: dict[tuple[int, str, str], dict[str, Any]] = {}
+        for e in snap.get("slices") or []:
+            by_key[self._entry_key(e)] = {
+                "sst": int(e["sst"]),
+                "sd": _fmt_sd(parse_sd(e["sd"])),
+                "direction": str(e["direction"]).lower(),
+                "dedicated": float(e["dedicated"]),
+                "min": float(e["min"]),
+                "max": float(e["max"]),
+            }
+        for e in sent:
+            by_key[self._entry_key(e)] = {
+                "sst": int(e["sst"]),
+                "sd": _fmt_sd(parse_sd(e["sd"])),
+                "direction": str(e["direction"]).lower(),
+                "dedicated": float(e["dedicated"]),
+                "min": float(e["min"]),
+                "max": float(e["max"]),
+            }
+        age = snap.get("indication_age_sec")
+        stale = age is None or float(age) >= self.INDICATION_STALE_SEC
+        snap["slices"] = list(by_key.values())
+        snap["desired"] = sent
+        snap["source"] = "last_set" if stale else "indication+last_set"
+        if stale:
+            snap["note"] = (
+                f"indications stale ({age if age is not None else 'none'}s); "
+                "GET overlays last E2 SET"
+            )
+        return snap
+
+    def _merge_base_slices(self) -> list[dict[str, Any]]:
+        """Policy rows used as PATCH merge base (prefer last SET when stale)."""
+        snap = self.state.snapshot()
+        age = snap.get("indication_age_sec")
+        stale = age is None or float(age) >= self.INDICATION_STALE_SEC
+        with self.lock:
+            sent = list((self.last_set or {}).get("sent") or [])
+        if sent and stale:
+            return sent
+        if sent:
+            # Even when indications are fresh, include SET rows so a PATCH does
+            # not drop recently-set siblings that the indication has not echoed.
+            by_key: dict[tuple[int, str, str], dict[str, Any]] = {}
+            for e in snap.get("slices") or []:
+                by_key[self._entry_key(e)] = e
+            for e in sent:
+                by_key[self._entry_key(e)] = e
+            return list(by_key.values())
+        return list(snap.get("slices") or [])
 
     def set_slices(self, raw_entries: list[dict[str, Any]]) -> dict[str, Any]:
         errors = validate_entries(raw_entries)
@@ -533,33 +664,39 @@ class SliceController:
             e.max_pct = n["max"]
             swig_vec.push_back(e)
 
+        sent = [
+            {
+                "sst": n["sst"],
+                "sd": n["sd"],
+                "direction": n["direction"],
+                "dedicated": n["dedicated"],
+                "min": n["min"],
+                "max": n["max"],
+            }
+            for n in normalized
+        ]
         with self.lock:
             self.ric.control_ns_slice_policy(self.node_id, swig_vec)
             self.last_set = {
                 "ok": True,
-                "sent": [
-                    {
-                        "sst": n["sst"],
-                        "sd": n["sd"],
-                        "direction": n["direction"],
-                        "dedicated": n["dedicated"],
-                        "min": n["min"],
-                        "max": n["max"],
-                    }
-                    for n in normalized
-                ],
-                "note": "E2 CONTROL ACK means RIC got a reply; confirm via GET /api/v1/slices or gNB log 'NS E2 SET applied'",
+                "sent": sent,
+                "note": (
+                    "E2 CONTROL ACK means RIC got a reply; GET overlays this "
+                    "SET when Slice SM indications stall"
+                ),
             }
-            return dict(self.last_set)
+            result = dict(self.last_set)
+        # Optimistic local policy so GET matches SET immediately.
+        self.state.apply_desired(sent)
+        return result
 
     def patch_slice(self, raw: dict[str, Any]) -> dict[str, Any]:
-        """Merge one entry into the current indication policy, then SET the merged list (excluding 0xffffff)."""
+        """Merge one entry into current policy, then SET (excluding 0xffffff)."""
         patch = normalize_entry(raw)
         if patch["sd_int"] == NS_DEFAULT_SD:
             raise ValueError("sd=0xffffff (default slice) cannot be SET over E2")
 
-        snap = self.state.snapshot()
-        current = [normalize_entry(e) for e in (snap.get("slices") or [])]
+        current = [normalize_entry(e) for e in self._merge_base_slices()]
         merged: list[dict[str, Any]] = []
         found = False
         for e in current:
@@ -573,7 +710,6 @@ class SliceController:
         if not found:
             merged.append(patch)
 
-        # set_slices expects raw-ish dicts with sd as hex/int
         payload = [
             {
                 "sst": e["sst"],
@@ -612,8 +748,8 @@ OPENAPI_SPEC: dict[str, Any] = {
             "Rules: `dedicated ≤ min ≤ max`, each in `[0, 100]`, "
             "sum(dedicated) ≤ 100% per direction, "
             "`sd=0xffffff` cannot be SET.\n\n"
-            "E2 CONTROL ACK only means the RIC got a reply — confirm with "
-            "GET `/api/v1/slices` or gNB log `NS E2 SET applied`."
+            "E2 CONTROL ACK means the RIC got a reply. GET `/api/v1/slices` "
+            "overlays the last successful SET when Slice SM indications stall."
         ),
     },
     "servers": [{"url": "/", "description": "this xApp"}],
@@ -990,6 +1126,8 @@ class SliceApiHandler(BaseHTTPRequestHandler):
                 {
                     "status": "ok",
                     "indications": snap.get("indications", 0),
+                    "indication_age_sec": snap.get("indication_age_sec"),
+                    "source": snap.get("source"),
                     "slices": len(snap.get("slices") or []),
                     "docs": "/docs",
                     "openapi": "/openapi.json",
@@ -1017,7 +1155,7 @@ class SliceApiHandler(BaseHTTPRequestHandler):
                     "GET /health": "liveness",
                     "GET /docs": "Swagger UI",
                     "GET /openapi.json": "OpenAPI 3 JSON",
-                    "GET /api/v1/slices": "current NS policy from last indication",
+                    "GET /api/v1/slices": "NS policy (indication + last SET overlay)",
                     "PUT /api/v1/slices": "SET policy list via E2 control_ns_slice_policy",
                     "PATCH /api/v1/slices": "merge one slice into current policy then SET",
                     "POST /api/v1/slices": "alias of PUT",
@@ -1272,6 +1410,8 @@ def main() -> int:
         httpd = start_api_server(args.api_host, args.api_port, controller)
 
     stop = {"flag": False}
+    last_resub_warn = 0.0
+    resub_cooldown_sec = 30.0
 
     def _on_sig(_signum: int, _frame: Any) -> None:
         stop["flag"] = True
@@ -1288,6 +1428,30 @@ def main() -> int:
             print("Running until Ctrl-C...", flush=True)
             while not stop["flag"]:
                 time.sleep(0.5)
+                # Recover stalled Slice SM indication subscription. CONTROL can
+                # still work while GET would otherwise freeze on the last ind.
+                age = state.indication_age_sec()
+                now = time.monotonic()
+                if (
+                    age is not None
+                    and age >= SliceController.INDICATION_STALE_SEC
+                    and now - last_resub_warn >= resub_cooldown_sec
+                ):
+                    last_resub_warn = now
+                    print(
+                        f"WARN: Slice SM indications stale for {age:.0f}s "
+                        f"(count={state.count}); re-subscribing",
+                        flush=True,
+                    )
+                    try:
+                        ric.rm_report_slice_sm(hndlr)
+                    except Exception as e:
+                        print(f"WARN: rm_report_slice_sm: {e}", file=sys.stderr)
+                    try:
+                        hndlr = ric.report_slice_sm(node.id, inter, cb)
+                        print("Re-subscribed Slice SM report", flush=True)
+                    except Exception as e:
+                        print(f"ERROR: report_slice_sm re-subscribe: {e}", file=sys.stderr)
     finally:
         print(f"Stopping (indications received: {state.count})")
         _stop_bootstrap()
