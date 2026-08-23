@@ -1,0 +1,30 @@
+# duranta-project/openairinterface5g — PR labels
+# https://github.com/duranta-project/openairinterface5g/labels
+#
+# At least one CI label is required when opening a PR (see doc/code-style-contrib.md).
+# Failure to add a label prevents CI from running.
+
+# --- Selected for NWS PR (frequency-domain network slicing) ---
+5G-NR
+gNB
+
+# --- All repository labels ---
+# name			description
+4G-LTE			Perform 4G Tests
+5G-NR			Perform 5G Tests
+BUILD-ONLY		Execute build stages only for code improvements with no impact on 4G/5G functionality.
+CI			Perform both 4G and 5G tests
+documentation		Documentation-related changes or updates.
+gNB
+L1
+nrUE			Run only 5G UE tests (physims included, LDPC tests excluded).
+bug			Something is not working as expected
+help wanted		Extra attention is needed
+imported-from-gitlab	Items migrated from GitLab into this repository.
+retrigger-ci		Re-run CI
+security		Security related issues or fixes.
+
+# --- NWS PR notes ---
+# Use:     5G-NR + gNB
+# Avoid:   nrUE (no UE changes), L1 (MAC only), BUILD-ONLY (skips 5G runtime tests),
+#           documentation alone (skips 5G tests), 4G-LTE (NR-only change)

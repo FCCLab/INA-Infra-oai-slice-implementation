@@ -11,6 +11,7 @@ Examples:
   python3 bringup.py --build-quick           # local cmake nr-softmodem → quick oai-gnb image
   python3 bringup.py --no-build              # skip OAI recompile and compose --build
   python3 bringup.py --ues 2 --sch PF
+  python3 bringup.py --no-slice                    # PF DL+UL (no NS); works at 133 PRB / 5 UEs
   python3 bringup.py --sch NSBOTH --split --bw 133  # 5 UE CU/DU/CU-UP @ 133 PRB
   python3 bringup.py --sch NSUL --split --bw 106    # 3 UE CU/DU/CU-UP @ 106 PRB
   python3 bringup.py --split-mult-upf-cuup --sch NSBOTH  # 5 CU-UP + 5 UPF (1 per slice)
@@ -1183,11 +1184,16 @@ def main() -> int:
     ap.add_argument(
         "--sch",
         type=parse_sch,
-        default="NSBOTH",
+        default=None,
         help=(
             "gNB scheduler: NSBOTH/BOTH (DL+UL NS, default), NS/NSUL (UL NS), "
-            "NSDL (DL NS), or PF (both PF)"
+            "NSDL (DL NS), or PF (both PF). Conflicts with --no-slice"
         ),
+    )
+    ap.add_argument(
+        "--no-slice",
+        action="store_true",
+        help="Bring up with PF scheduler on DL and UL (no network slicing); same as --sch PF",
     )
     ap.add_argument(
         "--split",
@@ -1240,6 +1246,14 @@ def main() -> int:
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
 
+    if args.no_slice and args.sch is not None and args.sch != "PF":
+        print(
+            f"FAIL: --no-slice conflicts with --sch {args.sch} (use one or the other)",
+            flush=True,
+        )
+        return 1
+    sch = "PF" if args.no_slice else (args.sch if args.sch is not None else "NSBOTH")
+
     if args.command == "down":
         return bring_down(
             with_core=args.with_core,
@@ -1249,8 +1263,14 @@ def main() -> int:
 
     args.build = args.build or args.force_rebuild_oai or args.build_quick
     args.no_build = not args.build
-    sch = args.sch  # already canonical via parse_sch
     log = setup_log(args.verbose)
+
+    if args.no_slice and (args.split or args.split_mult_upf_cuup):
+        print(
+            "FAIL: --no-slice is mono-gNB only (omit --split / --split-mult-upf-cuup)",
+            flush=True,
+        )
+        return 1
 
     if args.split_mult_upf_cuup:
         args.split = True
@@ -1317,9 +1337,7 @@ def main() -> int:
             raise ValueError("133 PRB configuration is only supported for 5 UEs (5 slices).")
 
     if not args.split:
-        if sch == "PF" and args.ues in PF_DEDICATED:
-            if args.bw == 133:
-                raise ValueError("PF scheduler is not supported with 133 PRB configuration.")
+        if sch == "PF" and args.ues in PF_DEDICATED and args.bw != 133:
             compose_name, gnb_name = PF_DEDICATED[args.ues]
         elif sch == "NSDL" and args.ues in NSDL_DEDICATED:
             if args.bw == 133:
@@ -1371,6 +1389,7 @@ def main() -> int:
     print(
         f"Bringup: ues={args.ues} sch={sch} "
         f"(DL={sched_label(dl_i)} UL={sched_label(ul_i)}) "
+        f"no_slice={'yes' if args.no_slice else 'no'} "
         f"split={'mult-upf-cuup' if args.split_mult_upf_cuup else ('yes' if args.split else 'no')} "
         f"ric={'yes' if with_ric else 'no'} "
         f"build={'no' if args.no_build else ('quick' if args.build_quick else ('force' if args.force_rebuild_oai else 'yes'))} "
