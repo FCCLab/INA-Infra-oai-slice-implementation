@@ -37,6 +37,7 @@ cd xapp && docker compose up --build
 ./bringup.py down --with-core        # also stop 5GC
 ./bringup.py --ues 2 --sch PF
 ./bringup.py --no-build              # skip image rebuild
+./bringup.py --build-quick           # local cmake + quick oai-gnb image
 ./bringup.py --no-ric                # skip FlexRIC
 ./bringup.py --no-ping
 ```
@@ -46,6 +47,7 @@ cd xapp && docker compose up --build
 | `--ues` | `5` | 1..5 |
 | `--sch` | `NSBOTH` | `NSBOTH`/`BOTH`, `NS`/`NSUL`, `NSDL`, `PF` |
 | `--no-build` | off | Skip OAI recompile + compose `--build` |
+| `--build-quick` | off | Local `nr-softmodem` → `build_oai_gnb_quick.sh` (no docker `build_oai`) |
 | `--force-rebuild-oai` | off | `docker build --no-cache` for `ran-build` + `oai-gnb` |
 | `--ping-host` | `10.45.0.1` | UPF via oaitun |
 
@@ -65,19 +67,32 @@ For `NSBOTH` / `PF` (non-dedicated), bringup **runtime-patches**
 
 ### DL NS fix (`NSDL` / `NSBOTH`)
 
-Older images reset the DL DCI/UE budget inside every per-slice `pf_dl()` call
+Older images reset the DL DCI/UE budget inside every per-slice scheduler call
 (UL already shared `remainUEs` across slices). With 5 slices that over-schedules
 PDCCH, starves ping/SRB DL, and can trigger RLC max RETX / reestablishment /
 `get_searchspace()` abort.
 
-Fix in tree (`gNB_scheduler_dlsch.c`): share `remainUEs` across DL slices and
-remap DL HARQ retx inside the current slice window.
+Fix in tree (`gNB_scheduler_dlsch.c`): share `remainUEs` across DL slices;
+intra-slice scheduling uses `nr_dl_schedule()` with slice-aware
+`nr_dl_proportional_fair`; DL HARQ retx is remapped inside the slice window.
 
 **Build note:** `docker compose --build` only *packages* `ran-build:latest`.
-Default `./bringup.py` (without `--no-build`) runs `build_ran_build.sh` +
-`build_oai_gnb.sh`. If MAC sources are newer than `ran-build:latest`, or you
-pass `--force-rebuild-oai`, those scripts get **`docker build --no-cache`**
-(so stale BuildKit layers cannot keep an old softmodem):
+Default `./bringup.py` runs `build_ran_build.sh` + `build_oai_gnb.sh`.
+
+**Quick build** (after you have `ran-build:latest` once):
+
+```bash
+cd openairinterface5g/cmake_targets/ran_build/build
+cmake --build . --target nr-softmodem -j$(nproc)
+cd ../../../nws/build_scripts
+./build_oai_gnb_quick.sh   # Dockerfile.gNB.quick.ubuntu + staging/nr-softmodem
+# or: ./bringup.py --build-quick --no-ric
+```
+
+Copies local `nr-softmodem` into `oai-gnb`; reuses `.so` + FlexRIC SM from `ran-build:latest`.
+
+Full rebuild with **`docker build --no-cache`** when MAC sources are newer than
+`ran-build:latest`, or pass `--force-rebuild-oai`:
 
 ```bash
 ./bringup.py --sch NSDL                 # --no-cache when sources newer than image

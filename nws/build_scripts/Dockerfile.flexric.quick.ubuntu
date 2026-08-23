@@ -1,0 +1,39 @@
+# SPDX-License-Identifier: LicenseRef-CSSL-1.0
+#
+# Quick oai-flexric image: nearRT-RIC + SM plugins from local incremental ninja build.
+# Build context: workspace root (see build_oai_flexric_quick.sh).
+
+ARG UBUNTU_IMAGE=ubuntu:noble
+FROM ${UBUNTU_IMAGE} AS oai-flexric
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Europe/Paris
+
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get upgrade --yes && \
+    DEBIAN_FRONTEND=noninteractive apt-get install --yes \
+        psmisc \
+        libsctp1 \
+        python3 \
+        python3-pip && \
+    apt-get autoremove -y && \
+    apt-get autoclean -y
+
+COPY nws/build_scripts/staging/flexric/bin/nearRT-RIC /usr/local/bin/nearRT-RIC
+COPY nws/build_scripts/staging/flexric/lib/libe42_xapp_shared.so /flexric/build/src/xApp/libe42_xapp_shared.so
+COPY nws/build_scripts/staging/flexric/lib/flexric/ /usr/local/lib/flexric/
+COPY nws/build_scripts/staging/flexric/xApp/ /usr/local/flexric/xApp/
+COPY nws/build_scripts/staging/flexric/emulator/ /usr/local/flexric/emulator/
+COPY nws/build_scripts/staging/flexric/28_552_kpm_meas.txt /flexric/build/28_552_kpm_meas.txt
+COPY nws/build_scripts/staging/flexric/etc/flexric/flexric.conf /usr/local/etc/flexric/flexric.conf
+
+RUN ldconfig && \
+    echo "--- quick flexric: ldd nearRT-RIC ---" && \
+    ldd /usr/local/bin/nearRT-RIC && \
+    echo "--- quick flexric: slice_sm ---" && \
+    ldd /usr/local/lib/flexric/libslice_sm.so
+
+EXPOSE 36421/sctp
+EXPOSE 36422/sctp
+
+CMD ["stdbuf", "-o0", "nearRT-RIC"]

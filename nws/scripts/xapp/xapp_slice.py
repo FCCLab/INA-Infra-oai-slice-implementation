@@ -7,13 +7,14 @@ exposes a small HTTP API to GET / SET NS dedicated/min/max ratios via
 `control_ns_slice_policy`.
 
 GET overlays the last successful SET when Slice SM indications stall (CONTROL
-can keep working while the indication subscription freezes). A watchdog
-re-subscribes the report when indications go stale.
+can keep working while the indication subscription freezes). Optional watchdog
+(--resubscribe-stale) re-subscribes when indications go stale; off by default
+because SUBSCRIPTION_DELETE can crash nearRT-RIC when E2 state is inconsistent.
 
 Examples:
-  python3 xapp_slice.py --print --api-port 8080
-  curl -s http://192.168.201.143:8080/api/v1/slices | jq .
-  curl -s -X PUT http://192.168.201.143:8080/api/v1/slices \\
+  python3 xapp_slice.py --print --api-port 18080
+  curl -s http://192.168.201.143:18080/api/v1/slices | jq .
+  curl -s -X PUT http://192.168.201.143:18080/api/v1/slices \\
     -H 'Content-Type: application/json' \\
     -d '{"slices":[{"sst":1,"sd":"0x000002","direction":"ul","dedicated":10,"min":10,"max":100}]}'
 """
@@ -25,6 +26,7 @@ import json
 import os
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -35,13 +37,14 @@ from typing import Any, Optional
 from urllib.parse import parse_qs, urlparse
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+GUI_HTML_PATH = SCRIPT_DIR / "slice_gui.html"
 # scripts/xapp -> nws
 NWS_DIR = SCRIPT_DIR.parent.parent if (SCRIPT_DIR.parent.name == "scripts") else SCRIPT_DIR.parent
 DEFAULT_CONF = Path(
     os.environ.get(
         "FLEXRIC_CONF",
         str(
-            Path("/etc/flexric/flexric.conf")
+            Path("/usr/local/etc/flexric/flexric.conf")
             if os.environ.get("NWS_XAPP_IN_DOCKER") == "1"
             else NWS_DIR / "configs" / "flexric" / "flexric.conf"
         ),
@@ -56,7 +59,7 @@ IN_DOCKER = os.environ.get("NWS_XAPP_IN_DOCKER") == "1"
 INTERVAL_CHOICES = ("1", "2", "5", "10", "100", "1000")
 DEFAULT_INTERVAL = "10"
 DEFAULT_API_HOST = os.environ.get("NWS_XAPP_API_HOST", "0.0.0.0")
-DEFAULT_API_PORT = int(os.environ.get("NWS_XAPP_API_PORT", "8080"))
+DEFAULT_API_PORT = int(os.environ.get("NWS_XAPP_API_PORT", "18080"))
 NS_DEFAULT_SD = 0xFFFFFF
 
 
@@ -115,6 +118,119 @@ def import_ric():
     return ric
 
 
+def resolve_api_port_from_argv(argv: list[str], default: int = DEFAULT_API_PORT) -> tuple[int, bool]:
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--api-port" and i + 1 < len(argv):
+            return int(argv[i + 1]), True
+        if a.startswith("--api-port="):
+            return int(a.split("=", 1)[1]), True
+        i += 1
+    return default, False
+
+
+def is_port_available(port: int, host: str = "0.0.0.0") -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind((host, port))
+        except OSError:
+            return False
+    return True
+
+
+def find_available_api_port(preferred: int, host: str = "0.0.0.0", max_tries: int = 20) -> int:
+    for port in range(preferred, preferred + max_tries):
+        if is_port_available(port, host):
+            return port
+    return preferred
+
+
+def run_with_timeout(fn, timeout_sec: float, label: str) -> bool:
+    """Run fn in a thread; return False if it does not finish within timeout_sec."""
+    err: list[BaseException] = []
+
+    def _run() -> None:
+        try:
+            fn()
+        except BaseException as e:
+            err.append(e)
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    t.join(timeout=timeout_sec)
+    if t.is_alive():
+        print(f"WARN: {label} timed out after {timeout_sec:.0f}s (RIC may be down)", file=sys.stderr)
+        return False
+    if err:
+        raise err[0]
+    return True
+
+
+def run_docker_forwarding_signals(docker_argv: list[str]) -> int:
+    """docker run wrapper that forwards Ctrl-C/SIGTERM to the container."""
+    proc = subprocess.Popen(docker_argv)
+    try:
+        return proc.wait()
+    except KeyboardInterrupt:
+        print("\nStopping xApp container...", flush=True)
+        proc.send_signal(signal.SIGINT)
+        try:
+            return proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            return proc.wait()
+
+def warn_ric_stack_conflicts(ric_container: str = "nws-nearRT-RIC") -> None:
+    """Warn about extra RIC/xApp containers that often crash or confuse nws-nearRT-RIC."""
+    try:
+        out = subprocess.check_output(
+            ["docker", "ps", "--format", "{{.Names}}"],
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return
+    names = {n.strip() for n in out.splitlines() if n.strip()}
+    extras = []
+    if "nearRT-RIC" in names and ric_container in names:
+        extras.append("nearRT-RIC (legacy host-network RIC — stop if using nws stack)")
+    if "xapp-python" in names:
+        extras.append("xapp-python (legacy xApp — hammers E42 setup every 5s)")
+    if len([n for n in names if "xapp" in n.lower() and n != ric_container]) > 1:
+        extras.append("multiple xApp containers — only one should connect to nws-nearRT-RIC")
+    for msg in extras:
+        print(f"WARN: {msg}", file=sys.stderr)
+
+
+    out: list[str] = []
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--api-port":
+            i += 2
+            continue
+        if a.startswith("--api-port="):
+            i += 1
+            continue
+        out.append(a)
+        i += 1
+    return out
+
+
+def parse_wait_e2_from_argv(argv: list[str], default: float = 60.0) -> float:
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--wait-e2" and i + 1 < len(argv):
+            return float(argv[i + 1])
+        if a.startswith("--wait-e2="):
+            return float(a.split("=", 1)[1])
+        i += 1
+    return default
+
+
 def reexec_via_docker(argv: list[str], *, conf: Path, image: str, network: str) -> int:
     if not shutil.which("docker"):
         print("ERROR: docker not found and host has no xapp_sdk", file=sys.stderr)
@@ -150,6 +266,23 @@ def reexec_via_docker(argv: list[str], *, conf: Path, image: str, network: str) 
 
     out_host = SCRIPT_DIR / "out"
     out_host.mkdir(parents=True, exist_ok=True)
+    api_port, explicit = resolve_api_port_from_argv(argv)
+    if not explicit:
+        available = find_available_api_port(api_port, DEFAULT_API_HOST)
+        if available != api_port:
+            print(f"Port {api_port} in use — REST API will use {available}")
+            api_port = available
+    forwarded = strip_api_port_args(forwarded)
+    ric_container = os.environ.get("NWS_NEAR_RIC_CONTAINER", "nws-nearRT-RIC")
+    wait_e2 = parse_wait_e2_from_argv(argv)
+    if not wait_ric_e2_before_xapp_init(timeout_s=wait_e2, ric_container=ric_container):
+        print(
+            "ERROR: no gNB E2 on nearRT-RIC — refusing to start xApp container.\n"
+            "  Enable e2_agent in gNB YAML, then: "
+            f"docker restart {ric_container} nws-oai-gnb",
+            file=sys.stderr,
+        )
+        return 1
     docker_argv = [
         "docker",
         "run",
@@ -157,19 +290,25 @@ def reexec_via_docker(argv: list[str], *, conf: Path, image: str, network: str) 
         "--network",
         network,
         "-p",
-        f"{DEFAULT_API_PORT}:{DEFAULT_API_PORT}",
+        f"{api_port}:{api_port}",
         "-e",
         "NWS_XAPP_IN_DOCKER=1",
         "-e",
+        "NWS_XAPP_RIC_E2_READY=1",
+        "-e",
+        f"NWS_XAPP_API_PORT={api_port}",
+        "-e",
         "PYTHONPATH=/usr/local/flexric/xApp/python3",
         "-e",
-        "LD_LIBRARY_PATH=/usr/local/lib",
+        "LD_LIBRARY_PATH=/usr/local/lib:/usr/local/lib/flexric:/flexric/build/src/xApp",
         "-e",
-        "FLEXRIC_CONF=/xapp/flexric.conf",
+        "FLEXRIC_CONF=/usr/local/etc/flexric/flexric.conf",
         "-v",
         f"{script}:/xapp/xapp_slice.py:ro",
         "-v",
-        f"{conf}:/xapp/flexric.conf:ro",
+        f"{GUI_HTML_PATH}:/xapp/slice_gui.html:ro",
+        "-v",
+        f"{conf}:/usr/local/etc/flexric/flexric.conf:ro",
         "-v",
         f"{out_host}:/xapp/out",
         "-w",
@@ -178,11 +317,13 @@ def reexec_via_docker(argv: list[str], *, conf: Path, image: str, network: str) 
         "python3",
         "/xapp/xapp_slice.py",
         "--conf",
-        "/xapp/flexric.conf",
+        "/usr/local/etc/flexric/flexric.conf",
         "--out",
         "/xapp/out/rt_slice_stats.json",
         "--ns-out",
         "/xapp/out/rt_ns_slice_policy.json",
+        "--api-port",
+        str(api_port),
         *forwarded,
     ]
     if sys.stdin.isatty() and sys.stdout.isatty():
@@ -190,7 +331,7 @@ def reexec_via_docker(argv: list[str], *, conf: Path, image: str, network: str) 
 
     print(f"No host xapp_sdk — running in {image} on network {network}")
     print("  (host Python is typically 3.10; image SDK needs 3.12)")
-    return subprocess.call(docker_argv)
+    return run_docker_forwarding_signals(docker_argv)
 
 
 def slice_algo_name(type_id: int) -> str:
@@ -213,6 +354,22 @@ def parse_sd(value: Any) -> int:
     return int(s, 10)
 
 
+def _dir_name(d: Any) -> str:
+    if isinstance(d, str):
+        s = d.strip().lower()
+        if s in ("ul", "dl"):
+            return s
+    try:
+        di = int(d)
+        if di == 0:
+            return "dl"
+        if di == 1:
+            return "ul"
+    except (TypeError, ValueError):
+        pass
+    return str(d).lower()
+
+
 def ns_policy_to_list(ind: Any) -> list[dict[str, Any]]:
     """OAI NS PRB policy from indication (the real network slices)."""
     out: list[dict[str, Any]] = []
@@ -224,7 +381,7 @@ def ns_policy_to_list(ind: Any) -> list[dict[str, Any]]:
             {
                 "sst": int(e.sst),
                 "sd": _fmt_sd(e.sd),
-                "direction": str(e.direction).lower(),
+                "direction": _dir_name(e.direction),
                 "dedicated": float(e.dedicated_pct),
                 "min": float(e.min_pct),
                 "max": float(e.max_pct),
@@ -469,6 +626,64 @@ def wait_e2_nodes(ric: Any, timeout_s: float) -> list[Any]:
     return list(ric.conn_e2_nodes())
 
 
+def parse_near_ric_ip(conf: Path) -> str:
+    try:
+        for line in conf.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if stripped.startswith("NEAR_RIC_IP"):
+                return stripped.split("=", 1)[1].strip()
+    except OSError:
+        pass
+    return os.environ.get("NEAR_RIC_IP", "192.168.201.142")
+
+
+def ric_logs_show_e2_setup(ric_container: str) -> bool:
+    if not shutil.which("docker"):
+        return False
+    try:
+        out = subprocess.check_output(
+            ["docker", "logs", "--tail", "300", ric_container],
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return "E2 SETUP-REQUEST rx" in out
+
+
+def wait_ric_e2_before_xapp_init(*, timeout_s: float, ric_container: str) -> bool:
+    """Wait for gNB E2 on nearRT-RIC before xApp init (FlexRIC asserts on E42 otherwise)."""
+    if os.environ.get("NWS_XAPP_SKIP_RIC_WAIT") == "1":
+        return True
+    if ric_logs_show_e2_setup(ric_container):
+        print(f"gNB E2 already attached on {ric_container}", flush=True)
+        return True
+
+    deadline = time.monotonic() + timeout_s
+    last_log = 0.0
+    print(
+        f"Waiting up to {timeout_s:.0f}s for gNB E2 on {ric_container} "
+        "(before xApp init — avoids nearRT-RIC crash)",
+        flush=True,
+    )
+    while time.monotonic() < deadline:
+        if ric_logs_show_e2_setup(ric_container):
+            print(f"  gNB E2 attached on {ric_container}", flush=True)
+            return True
+        now = time.monotonic()
+        if now - last_log >= 5.0:
+            left = max(0.0, deadline - now)
+            print(
+                f"  … no gNB E2 on nearRT-RIC yet "
+                f"(enable e2_agent in gNB YAML and restart gNB?) {left:.0f}s left",
+                flush=True,
+            )
+            last_log = now
+        time.sleep(1.0)
+    return ric_logs_show_e2_setup(ric_container)
+
+
 def available_intervals(ric: Any) -> list[str]:
     found: list[str] = []
     for ms in INTERVAL_CHOICES:
@@ -526,6 +741,7 @@ def validate_entries(entries: list[dict[str, Any]]) -> list[str]:
         return errors
 
     sum_ded: dict[str, float] = {"ul": 0.0, "dl": 0.0}
+    sum_min: dict[str, float] = {"ul": 0.0, "dl": 0.0}
     for i, e in enumerate(entries):
         try:
             n = normalize_entry(e)
@@ -544,10 +760,14 @@ def validate_entries(entries: list[dict[str, Any]]) -> list[str]:
                 f"(got {n['dedicated']}/{n['min']}/{n['max']})"
             )
         sum_ded[n["direction"]] += n["dedicated"]
+        sum_min[n["direction"]] += n["min"]
 
     for d, total in sum_ded.items():
         if total > 100.0 + 1e-6:
             errors.append(f"sum(dedicated) for {d} is {total:.1f}% (> 100%)")
+    for d, total in sum_min.items():
+        if total > 100.0 + 1e-6:
+            errors.append(f"sum(min) for {d} is {total:.1f}% (> 100%)")
     return errors
 
 
@@ -567,8 +787,8 @@ def parse_slices_body(body: Any) -> list[dict[str, Any]]:
 
 
 class SliceController:
-    # If Slice SM indications stop arriving this long, prefer last SET for merge
-    # and attempt a re-subscribe from the main loop.
+    # If Slice SM indications stop arriving this long, prefer last SET for merge.
+    # Re-subscribe (opt-in) may call SUBSCRIPTION_DELETE and crash nearRT-RIC.
     INDICATION_STALE_SEC = 15.0
 
     def __init__(self, ric: Any, node_id: Any, state: MonitorState) -> None:
@@ -658,7 +878,7 @@ class SliceController:
             e = self.ric.swig_ns_slice_policy_entry_t()
             e.sst = n["sst"]
             e.sd = n["sd_int"]
-            e.direction = n["direction"]
+            e.direction = 0 if n["direction"] == "dl" else 1
             e.dedicated_pct = n["dedicated"]
             e.min_pct = n["min"]
             e.max_pct = n["max"]
@@ -746,7 +966,7 @@ OPENAPI_SPEC: dict[str, Any] = {
             "Read and change OAI network-slicing PRB policy over FlexRIC E2 "
             "Slice SM (`control_ns_slice_policy`).\n\n"
             "Rules: `dedicated ≤ min ≤ max`, each in `[0, 100]`, "
-            "sum(dedicated) ≤ 100% per direction, "
+            "sum(dedicated) ≤ 100% and sum(min) ≤ 100% per direction, "
             "`sd=0xffffff` cannot be SET.\n\n"
             "E2 CONTROL ACK means the RIC got a reply. GET `/api/v1/slices` "
             "overlays the last successful SET when Slice SM indications stall."
@@ -1104,8 +1324,15 @@ class SliceApiHandler(BaseHTTPRequestHandler):
         if path in ("/docs", "/swagger"):
             self._send(200, SWAGGER_HTML, content_type="text/html; charset=utf-8")
             return
+        if path in ("/gui", "/ui"):
+            self._send(200, _load_gui_html(), content_type="text/html; charset=utf-8")
+            return
         if path == "/openapi.json":
             self._send(200, OPENAPI_SPEC)
+            return
+        if path == "/api/v1/hosts":
+            port = int(self.server.server_address[1])
+            self._send(200, _api_hosts_payload(port))
             return
         if path in ("/", "/health"):
             ctrl = self.controller
@@ -1116,6 +1343,7 @@ class SliceApiHandler(BaseHTTPRequestHandler):
                         "status": "starting",
                         "note": "waiting for nearRT-RIC / E2",
                         "docs": "/docs",
+                        "gui": "/gui",
                         "openapi": "/openapi.json",
                     },
                 )
@@ -1130,6 +1358,7 @@ class SliceApiHandler(BaseHTTPRequestHandler):
                     "source": snap.get("source"),
                     "slices": len(snap.get("slices") or []),
                     "docs": "/docs",
+                    "gui": "/gui",
                     "openapi": "/openapi.json",
                 },
             )
@@ -1154,6 +1383,8 @@ class SliceApiHandler(BaseHTTPRequestHandler):
                 "endpoints": {
                     "GET /health": "liveness",
                     "GET /docs": "Swagger UI",
+                    "GET /gui": "Slice policy web UI",
+                    "GET /api/v1/hosts": "Reachable API URLs on this host",
                     "GET /openapi.json": "OpenAPI 3 JSON",
                     "GET /api/v1/slices": "NS policy (indication + last SET overlay)",
                     "PUT /api/v1/slices": "SET policy list via E2 control_ns_slice_policy",
@@ -1198,56 +1429,160 @@ class SliceApiHandler(BaseHTTPRequestHandler):
             self._send(500, {"error": f"{type(e).__name__}: {e}"})
 
 
-def _lab_api_urls(port: int) -> list[str]:
-    """Advertise reachable LAN URLs (env override or auto-detect host IPv4s)."""
-    override = (os.environ.get("NWS_XAPP_LAB_IP") or os.environ.get("NWS_XAPP_LAB_URL") or "").strip()
-    if override:
-        if override.startswith("http://") or override.startswith("https://"):
-            base = override.rstrip("/")
-            return [base if base.endswith("/docs") else f"{base}/docs"]
-        return [f"http://{override}:{port}/docs"]
+def _is_docker_bridge_ip(ip: str) -> bool:
+    return ip.startswith("172.") or ip.startswith("169.254.")
 
-    ips: list[str] = []
+
+def _is_excluded_gateway(ip: str) -> bool:
+    return ip in (
+        "10.53.1.1",
+        "10.47.0.1",
+        "192.168.201.1",
+        "192.168.202.1",
+        "192.168.122.1",
+        "192.168.200.1",
+    )
+
+
+def _ip_kind(ip: str) -> str:
+    if ip.startswith("10.1.132."):
+        return "lab-preferred"
+    if ip.startswith("10.1.") or ip.startswith("192.168."):
+        return "lab"
+    if _is_docker_bridge_ip(ip):
+        return "docker-bridge"
+    if ip.startswith("10.244."):
+        return "k8s"
+    return "other"
+
+
+def _collect_host_ips() -> list[dict[str, str]]:
+    """Enumerate non-loopback IPv4 addresses with interface names."""
+    found: dict[str, str] = {}
+
+    try:
+        out = subprocess.check_output(
+            ["ip", "-4", "-o", "addr", "show", "scope", "global"],
+            text=True,
+            timeout=2.0,
+        )
+        for line in out.splitlines():
+            parts = line.split()
+            if len(parts) < 4:
+                continue
+            iface = parts[1]
+            addr = parts[3].split("/")[0]
+            if addr and not addr.startswith("127."):
+                found.setdefault(addr, iface)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
     try:
         out = subprocess.check_output(["hostname", "-I"], text=True, timeout=2.0)
         for ip in out.split():
-            if (
-                ip
-                and not ip.startswith("127.")
-                and not ip.startswith("172.")
-                and not ip.startswith("10.244.")
-                and ip not in ("10.53.1.1", "10.47.0.1", "192.168.201.1", "192.168.202.1", "192.168.122.1")
-                and ip not in ips
-            ):
-                ips.append(ip)
+            if ip and not ip.startswith("127."):
+                found.setdefault(ip, found.get(ip, ""))
     except (OSError, subprocess.SubprocessError):
         pass
-    if not ips:
-        try:
-            import socket
 
+    if not found:
+        try:
             for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
                 ip = info[4][0]
-                if ip and not ip.startswith("127.") and ip not in ips:
-                    ips.append(ip)
+                if ip and not ip.startswith("127."):
+                    found.setdefault(ip, "")
         except OSError:
             pass
 
-    preferred = [ip for ip in ips if ip.startswith("10.1.132.")]
-    others = [ip for ip in ips if ip not in preferred]
-    ordered = preferred + others
-    if not ordered:
-        ordered = ["127.0.0.1"]
-    return [f"http://{ip}:{port}/docs" for ip in ordered[:3]]
+    rows: list[dict[str, str]] = []
+    for ip, iface in sorted(found.items()):
+        if ip.startswith("10.244.") or _is_excluded_gateway(ip):
+            continue
+        rows.append({"ip": ip, "iface": iface, "kind": _ip_kind(ip)})
+
+    def sort_key(row: dict[str, str]) -> tuple[int, str]:
+        kind_order = {
+            "lab-preferred": 0,
+            "lab": 1,
+            "other": 2,
+            "docker-bridge": 3,
+            "k8s": 4,
+        }
+        return (kind_order.get(row["kind"], 9), row["ip"])
+
+    rows.sort(key=sort_key)
+    return rows
+
+
+def _api_hosts_payload(port: int) -> dict[str, Any]:
+    override = (os.environ.get("NWS_XAPP_LAB_IP") or os.environ.get("NWS_XAPP_LAB_URL") or "").strip()
+    if override:
+        if override.startswith("http://") or override.startswith("https://"):
+            base = override.rstrip("/").removesuffix("/docs").removesuffix("/gui")
+        else:
+            base = f"http://{override}:{port}"
+        return {
+            "port": port,
+            "override": override,
+            "base_urls": [
+                {
+                    "ip": override,
+                    "iface": "env",
+                    "kind": "override",
+                    "api": f"{base}/api/v1/slices",
+                    "gui": f"{base}/gui",
+                    "docs": f"{base}/docs",
+                }
+            ],
+        }
+
+    rows = _collect_host_ips()
+    base_urls = [
+        {
+            "ip": row["ip"],
+            "iface": row["iface"],
+            "kind": row["kind"],
+            "api": f"http://{row['ip']}:{port}/api/v1/slices",
+            "gui": f"http://{row['ip']}:{port}/gui",
+            "docs": f"http://{row['ip']}:{port}/docs",
+        }
+        for row in rows
+    ]
+    if not base_urls:
+        base_urls = [
+            {
+                "ip": "127.0.0.1",
+                "iface": "loopback",
+                "kind": "local",
+                "api": f"http://127.0.0.1:{port}/api/v1/slices",
+                "gui": f"http://127.0.0.1:{port}/gui",
+                "docs": f"http://127.0.0.1:{port}/docs",
+            }
+        ]
+    return {"port": port, "base_urls": base_urls}
+
+
+def _lab_api_urls(port: int) -> list[str]:
+    """Advertise reachable LAN GUI URLs (env override or auto-detect host IPv4s)."""
+    payload = _api_hosts_payload(port)
+    return [entry["gui"] for entry in payload.get("base_urls", [])]
+
+
+def _load_gui_html() -> str:
+    path = GUI_HTML_PATH if GUI_HTML_PATH.is_file() else Path("/xapp/slice_gui.html")
+    if path.is_file():
+        return path.read_text(encoding="utf-8")
+    return "<html><body><h1>slice_gui.html not found</h1></body></html>"
 
 
 def _print_api_urls(host: str, port: int) -> None:
     print(f"REST API listening on http://{host}:{port}", flush=True)
+    print(f"  Slice GUI   http://{host}:{port}/gui", flush=True)
     print(f"  Swagger UI  http://{host}:{port}/docs", flush=True)
     print(f"  OpenAPI     http://{host}:{port}/openapi.json", flush=True)
     if host in ("0.0.0.0", "::", ""):
         for url in _lab_api_urls(port):
-            print(f"  (lab)       {url}", flush=True)
+            print(f"  (lab GUI)   {url}", flush=True)
     print("  GET/PUT/PATCH /api/v1/slices", flush=True)
 
 
@@ -1314,6 +1649,11 @@ def main() -> int:
     ap.add_argument("--api-host", default=DEFAULT_API_HOST, help="REST bind address")
     ap.add_argument("--api-port", type=int, default=DEFAULT_API_PORT, help="REST bind port")
     ap.add_argument("--no-api", action="store_true", help="Do not start REST API")
+    ap.add_argument(
+        "--resubscribe-stale",
+        action="store_true",
+        help="Re-subscribe Slice SM when indications stall (can crash nearRT-RIC; default off)",
+    )
     ap.add_argument("--docker", action="store_true", help="Force run in oai-flexric image")
     ap.add_argument("--host", action="store_true", help="Require local xapp_sdk")
     ap.add_argument("--docker-image", default=DEFAULT_DOCKER_IMAGE)
@@ -1322,7 +1662,17 @@ def main() -> int:
     if unknown:
         print(f"WARN: ignoring unknown args: {unknown}", file=sys.stderr)
 
+    if not args.resubscribe_stale and os.environ.get("NWS_XAPP_RESUBSCRIBE_STALE") == "1":
+        args.resubscribe_stale = True
+
     conf = args.conf.expanduser().resolve()
+
+    api_port, explicit = resolve_api_port_from_argv(sys.argv[1:])
+    if not explicit and not args.no_api:
+        available = find_available_api_port(args.api_port, args.api_host)
+        if available != args.api_port:
+            print(f"Port {args.api_port} in use — REST API will use {available}")
+            args.api_port = available
 
     if not IN_DOCKER and not args.host and (args.docker or not can_import_sdk()):
         return reexec_via_docker(
@@ -1335,6 +1685,9 @@ def main() -> int:
     if not conf.is_file():
         print(f"ERROR: FlexRIC conf not found: {conf}", file=sys.stderr)
         return 1
+
+    ric_container = os.environ.get("NWS_NEAR_RIC_CONTAINER", "nws-nearRT-RIC")
+    warn_ric_stack_conflicts(ric_container)
 
     out: Optional[Path] = None
     if str(args.out).strip() and str(args.out) not in ("-", "/dev/null"):
@@ -1361,6 +1714,21 @@ def main() -> int:
 
     ric = import_ric()
     print(f"Using conf: {conf}")
+    ric_container = os.environ.get("NWS_NEAR_RIC_CONTAINER", "nws-nearRT-RIC")
+    if os.environ.get("NWS_XAPP_RIC_E2_READY") != "1":
+        if not wait_ric_e2_before_xapp_init(timeout_s=args.wait_e2, ric_container=ric_container):
+            print(
+                "ERROR: no gNB E2 on nearRT-RIC — xApp init would crash the RIC.\n"
+                "  1. Enable e2_agent.near_ric_ip_addr in gNB YAML "
+                f"({parse_near_ric_ip(conf)})\n"
+                f"  2. docker restart {ric_container} nws-oai-gnb\n"
+                "  3. Re-run xApp after RIC logs show 'E2 SETUP-REQUEST rx'",
+                file=sys.stderr,
+            )
+            _stop_bootstrap()
+            return 1
+    elif IN_DOCKER:
+        print("gNB E2 pre-checked on host (NWS_XAPP_RIC_E2_READY=1)", flush=True)
     if hasattr(ric, "init_conf"):
         ric.init_conf(str(conf))
     else:
@@ -1409,15 +1777,22 @@ def main() -> int:
         _stop_bootstrap()
         httpd = start_api_server(args.api_host, args.api_port, controller)
 
-    stop = {"flag": False}
-    last_resub_warn = 0.0
-    resub_cooldown_sec = 30.0
+    stop = {"flag": False, "sig_count": 0}
 
-    def _on_sig(_signum: int, _frame: Any) -> None:
+    def _on_sig(signum: int, _frame: Any) -> None:
+        stop["sig_count"] += 1
         stop["flag"] = True
+        if stop["sig_count"] == 1:
+            print("\nShutting down (Ctrl-C again to force quit)...", flush=True)
+        elif stop["sig_count"] >= 2:
+            print("\nForce exit.", flush=True)
+            os._exit(128 + (signum if signum < 128 else 0))
 
     signal.signal(signal.SIGINT, _on_sig)
     signal.signal(signal.SIGTERM, _on_sig)
+
+    last_resub_warn = 0.0
+    resub_cooldown_sec = 30.0
 
     try:
         if args.duration > 0:
@@ -1425,11 +1800,14 @@ def main() -> int:
             while time.monotonic() < deadline and not stop["flag"]:
                 time.sleep(0.2)
         else:
-            print("Running until Ctrl-C...", flush=True)
+            print("Running until Ctrl-C (press again to force quit)...", flush=True)
             while not stop["flag"]:
                 time.sleep(0.5)
+                if not args.resubscribe_stale or stop["flag"]:
+                    continue
                 # Recover stalled Slice SM indication subscription. CONTROL can
                 # still work while GET would otherwise freeze on the last ind.
+                # SUBSCRIPTION_DELETE can assert/crash nearRT-RIC — opt-in only.
                 age = state.indication_age_sec()
                 now = time.monotonic()
                 if (
@@ -1443,27 +1821,28 @@ def main() -> int:
                         f"(count={state.count}); re-subscribing",
                         flush=True,
                     )
-                    try:
-                        ric.rm_report_slice_sm(hndlr)
-                    except Exception as e:
-                        print(f"WARN: rm_report_slice_sm: {e}", file=sys.stderr)
-                    try:
+                    if not run_with_timeout(
+                        lambda: ric.rm_report_slice_sm(hndlr),
+                        3.0,
+                        "rm_report_slice_sm (re-subscribe)",
+                    ):
+                        continue
+
+                    def _resub() -> None:
+                        nonlocal hndlr
                         hndlr = ric.report_slice_sm(node.id, inter, cb)
+
+                    if run_with_timeout(_resub, 5.0, "report_slice_sm (re-subscribe)"):
                         print("Re-subscribed Slice SM report", flush=True)
-                    except Exception as e:
-                        print(f"ERROR: report_slice_sm re-subscribe: {e}", file=sys.stderr)
     finally:
-        print(f"Stopping (indications received: {state.count})")
+        print(f"Stopping (indications received: {state.count})", flush=True)
         _stop_bootstrap()
         if httpd is not None:
             httpd.shutdown()
-        try:
-            ric.rm_report_slice_sm(hndlr)
-        except Exception as e:
-            print(f"WARN: rm_report_slice_sm: {e}", file=sys.stderr)
+        run_with_timeout(lambda: ric.rm_report_slice_sm(hndlr), 3.0, "rm_report_slice_sm (shutdown)")
         try:
             n = 0
-            while getattr(ric, "try_stop", 1) == 0 and n < 20:
+            while getattr(ric, "try_stop", 1) == 0 and n < 20 and not stop["flag"]:
                 time.sleep(0.1)
                 n += 1
         except Exception:

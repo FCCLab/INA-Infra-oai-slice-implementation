@@ -24,15 +24,18 @@ services:
     environment:
       PYTHONPATH: /usr/local/flexric/xApp/python3
       LD_LIBRARY_PATH: /usr/local/lib:/flexric/build/src/xApp
-      FLEXRIC_CONF: /etc/flexric/flexric.conf
+      FLEXRIC_CONF: /usr/local/etc/flexric/flexric.conf
       NWS_XAPP_IN_DOCKER: "1"
       NEAR_RIC_IP: ${NEAR_RIC_IP:-192.168.201.142}
       NWS_XAPP_API_HOST: "0.0.0.0"
       NWS_XAPP_API_PORT: "${XAPP_API_HOST_PORT:-18080}"
     volumes:
-      - ../../configs/flexric/flexric.conf:/etc/flexric/flexric.conf:ro
+      - ../../configs/flexric/flexric.conf:/usr/local/etc/flexric/flexric.conf:ro
       - ./out:/xapp/out
       - ./xapp_slice.py:/xapp/xapp_slice.py:ro
+      - ./slice_gui.html:/xapp/slice_gui.html:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /usr/bin/docker:/usr/bin/docker:ro
     stdin_open: true
     tty: true
     restart: "no"

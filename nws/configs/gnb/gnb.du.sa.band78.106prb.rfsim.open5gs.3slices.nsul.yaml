@@ -136,7 +136,7 @@ RUs:
     sdr_addrs: serial=XXXXXXX
 
 rfsimulator:
-  serveraddr: server
+  - serveraddr: server
 
 log_config:
   global_log_level: info

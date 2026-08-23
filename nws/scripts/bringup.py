@@ -8,6 +8,7 @@ Examples:
   python3 bringup.py                         # NSBOTH @ 133 PRB; rebuilds OAI if --build
   python3 bringup.py --ues 5 --sch NSUL
   python3 bringup.py --force-rebuild-oai     # docker --no-cache rebuild ran-build + oai-gnb
+  python3 bringup.py --build-quick           # local cmake nr-softmodem → quick oai-gnb image
   python3 bringup.py --no-build              # skip OAI recompile and compose --build
   python3 bringup.py --ues 2 --sch PF
   python3 bringup.py --sch NSBOTH --split --bw 133  # 5 UE CU/DU/CU-UP @ 133 PRB
@@ -105,6 +106,7 @@ DEFAULT_PING_HOST = "10.45.0.1"
 # Compose --build only packages ran-build:latest; these scripts recompile OAI.
 BUILD_RAN_BUILD_SH = BUILD_SCRIPTS_DIR / "build_ran_build.sh"
 BUILD_OAI_GNB_SH = BUILD_SCRIPTS_DIR / "build_oai_gnb.sh"
+BUILD_OAI_GNB_QUICK_SH = BUILD_SCRIPTS_DIR / "build_oai_gnb_quick.sh"
 BUILD_OAI_NR_CUUP_SH = BUILD_SCRIPTS_DIR / "build_oai_nr_cuup.sh"
 
 # UE index 1..5 — static PDU IPs from Open5GS subscriber DB / nrue UICC configs
@@ -495,6 +497,38 @@ def rebuild_oai_gnb(*, step: Step, force: bool = False) -> bool:
         step.write((out or "")[-2000:])
         return step.finish(False, "build_oai_gnb.sh failed")
     return step.finish(True, f"ran-build + oai-gnb rebuilt ({reason})")
+
+
+def rebuild_oai_gnb_quick(*, step: Step, force: bool = False) -> bool:
+    """
+    Package oai-gnb + oai-flexric from local cmake / incremental FlexRIC ninja.
+
+    Runs build_oai_gnb_quick.sh which rebuilds only changed targets (nr-softmodem,
+    slice_sm via FlexRIC ninja) and stages fresh libslice_sm.so for gNB and nearRT-RIC.
+    """
+    if not BUILD_OAI_GNB_QUICK_SH.is_file():
+        return step.finish(False, f"missing {BUILD_OAI_GNB_QUICK_SH}")
+
+    if docker_image_created_epoch("ran-base:latest") is None:
+        return step.finish(
+            False,
+            "ran-base:latest missing — run build_ran_base.sh once for runtime libs",
+        )
+
+    extra = ["--no-cache"] if force else []
+    step.write(
+        "Running build_oai_gnb_quick.sh (incremental FlexRIC + local gNB/UE → images)..."
+    )
+    ok, out = run_streamed(
+        ["bash", str(BUILD_OAI_GNB_QUICK_SH), *extra],
+        cwd=BUILD_SCRIPTS_DIR,
+        timeout=600.0,
+        step=step,
+    )
+    if not ok:
+        step.write((out or "")[-2000:])
+        return step.finish(False, "build_oai_gnb_quick.sh failed")
+    return step.finish(True, "oai-gnb + oai-flexric + oai-nr-ue quick-packaged from local build")
 
 
 def rebuild_oai_nr_cuup(*, step: Step, force: bool = False) -> bool:
@@ -1194,6 +1228,11 @@ def main() -> int:
         action="store_true",
         help="Force ran-build + oai-gnb with docker --no-cache (ignore BuildKit cache)",
     )
+    ap.add_argument(
+        "--build-quick",
+        action="store_true",
+        help="Local cmake nr-softmodem + quick oai-gnb image (skip docker build_oai)",
+    )
     ap.add_argument("--no-ping", action="store_true", help="Skip PDU attach / ping checks")
     ap.add_argument("--timeout", type=float, default=180.0, help="Per-step wait timeout (seconds)")
     ap.add_argument("--pdu-attempts", type=int, default=36, help="PDU IP poll attempts per UE")
@@ -1208,7 +1247,7 @@ def main() -> int:
             verbose=args.verbose,
         )
 
-    args.build = args.build or args.force_rebuild_oai
+    args.build = args.build or args.force_rebuild_oai or args.build_quick
     args.no_build = not args.build
     sch = args.sch  # already canonical via parse_sch
     log = setup_log(args.verbose)
@@ -1334,7 +1373,7 @@ def main() -> int:
         f"(DL={sched_label(dl_i)} UL={sched_label(ul_i)}) "
         f"split={'mult-upf-cuup' if args.split_mult_upf_cuup else ('yes' if args.split else 'no')} "
         f"ric={'yes' if with_ric else 'no'} "
-        f"build={'no' if args.no_build else ('force' if args.force_rebuild_oai else 'yes')} "
+        f"build={'no' if args.no_build else ('quick' if args.build_quick else ('force' if args.force_rebuild_oai else 'yes'))} "
         f"core={core_compose.name} "
         f"compose={compose.name} gnb={gnb_src.name}",
         flush=True,
@@ -1404,7 +1443,13 @@ def main() -> int:
             return 1
 
         if not args.no_build:
-            if not rebuild_oai_gnb(
+            if args.build_quick:
+                if not rebuild_oai_gnb_quick(
+                    step=next_step("Build OAI gNB (quick)"),
+                    force=args.force_rebuild_oai,
+                ):
+                    return 1
+            elif not rebuild_oai_gnb(
                 step=next_step("Build OAI gNB"),
                 force=args.force_rebuild_oai,
             ):

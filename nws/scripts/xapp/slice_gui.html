@@ -1,0 +1,517 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>NWS Slice Policy</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --panel: #1a2332;
+      --border: #2d3a4f;
+      --text: #e7ecf3;
+      --muted: #8b9cb3;
+      --accent: #3d8bfd;
+      --ok: #3dd68c;
+      --warn: #f5a524;
+      --err: #f87171;
+      --live-bg: #121a26;
+      --edit-bg: #0f172a;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.45;
+    }
+    header {
+      padding: 1rem 1.25rem;
+      border-bottom: 1px solid var(--border);
+      background: var(--panel);
+    }
+    header h1 { margin: 0 0 .25rem; font-size: 1.25rem; }
+    header p { margin: 0; color: var(--muted); font-size: .9rem; }
+    main { padding: 1rem 1.25rem 2rem; max-width: 1400px; }
+    section {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1rem;
+      margin-bottom: 1rem;
+    }
+    h2 { margin: 0 0 .75rem; font-size: 1rem; }
+    .toolbar { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; margin-bottom: .75rem; }
+    button, .btn {
+      background: var(--accent);
+      color: #fff;
+      border: 0;
+      border-radius: 6px;
+      padding: .45rem .8rem;
+      font-size: .875rem;
+      cursor: pointer;
+    }
+    button.secondary { background: #334155; }
+    button:disabled { opacity: .5; cursor: not-allowed; }
+    label { display: inline-flex; align-items: center; gap: .35rem; color: var(--muted); font-size: .875rem; }
+    .status {
+      display: flex; flex-wrap: wrap; gap: 1rem;
+      font-size: .875rem; color: var(--muted); margin-bottom: .75rem;
+    }
+    .status strong { color: var(--text); }
+    .pill {
+      display: inline-block; padding: .1rem .45rem; border-radius: 999px;
+      font-size: .75rem; background: #243044;
+    }
+    .pill.ok { color: var(--ok); }
+    .pill.warn { color: var(--warn); }
+    .pill.err { color: var(--err); }
+    table { width: 100%; border-collapse: collapse; font-size: .875rem; }
+    th, td { border-bottom: 1px solid var(--border); padding: .5rem .4rem; text-align: left; vertical-align: middle; }
+    th { color: var(--muted); font-weight: 600; white-space: nowrap; }
+    th.group-live { background: var(--live-bg); border-bottom-color: #3a4d66; }
+    th.group-set { background: var(--edit-bg); border-bottom-color: #3a4d66; }
+    td.live { background: var(--live-bg); color: var(--text); font-variant-numeric: tabular-nums; }
+    td.set { background: var(--edit-bg); }
+    .col-live, .col-set { text-align: center; font-size: .7rem; letter-spacing: .04em; text-transform: uppercase; }
+    .col-live { color: #7eb8ff; }
+    .col-set { color: var(--ok); }
+    input[type="number"], input[type="text"], select {
+      width: 100%;
+      min-width: 4.5rem;
+      background: #0b1220;
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 4px;
+      padding: .35rem .45rem;
+      font-size: .875rem;
+    }
+    input:disabled, select:disabled { opacity: .55; }
+    .row-actions { display: flex; flex-wrap: wrap; gap: .35rem; }
+    .row-actions button { padding: .3rem .55rem; font-size: .75rem; }
+    #hosts { list-style: none; padding: 0; margin: 0; }
+    #hosts li {
+      display: flex; flex-wrap: wrap; gap: .5rem; align-items: center;
+      padding: .35rem 0; border-bottom: 1px solid var(--border);
+      font-size: .875rem;
+    }
+    #hosts a { color: var(--accent); text-decoration: none; }
+    #hosts a:hover { text-decoration: underline; }
+    #msg { min-height: 1.25rem; font-size: .875rem; margin-top: .5rem; }
+    #msg.ok { color: var(--ok); }
+    #msg.err { color: var(--err); }
+    .iface { color: var(--muted); font-size: .75rem; }
+    .kind { font-size: .7rem; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+    .hint { color: var(--muted); font-size: .8rem; margin: 0 0 .75rem; }
+    tr.dirty .set input { border-color: var(--warn); }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>NWS NS Slice Policy</h1>
+    <p>Live OAI PRB policy from FlexRIC Slice SM — compare live values and SET via E2</p>
+  </header>
+  <main>
+    <section>
+      <h2>Reachable API URLs</h2>
+      <ul id="hosts"><li>Loading hosts…</li></ul>
+    </section>
+
+    <section>
+      <div class="toolbar">
+        <button id="refreshBtn" type="button">Refresh now</button>
+        <label><input id="autoRefresh" type="checkbox" checked/> Auto-refresh live (2s)</label>
+        <button id="syncEditsBtn" type="button" class="secondary">Copy live → set</button>
+        <button id="applyAllBtn" type="button" class="secondary">Apply all (PUT)</button>
+      </div>
+      <p class="hint">
+        <strong>Live</strong> columns update from E2 indications. <strong>Set</strong> columns stay editable — auto-refresh only updates Live cells and pauses while you type in a Set box.
+      </p>
+      <div class="status" id="meta"></div>
+      <div id="msg"></div>
+      <div style="overflow-x:auto">
+        <table>
+          <thead>
+            <tr>
+              <th rowspan="2">SST</th>
+              <th rowspan="2">SD</th>
+              <th rowspan="2">Dir</th>
+              <th colspan="3" class="col-live group-live">Live (from gNB)</th>
+              <th colspan="3" class="col-set group-set">Set (your edit)</th>
+              <th rowspan="2"></th>
+            </tr>
+            <tr>
+              <th class="group-live">Dedicated %</th>
+              <th class="group-live">Min %</th>
+              <th class="group-live">Max %</th>
+              <th class="group-set">Dedicated %</th>
+              <th class="group-set">Min %</th>
+              <th class="group-set">Max %</th>
+            </tr>
+          </thead>
+          <tbody id="sliceBody">
+            <tr><td colspan="10">Loading…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+  <script>
+    const $ = (sel) => document.querySelector(sel);
+    const sliceBody = $('#sliceBody');
+    const meta = $('#meta');
+    const msg = $('#msg');
+    let timer = null;
+    let lastSnapshot = null;
+    /** @type {Map<string, {dedicated:number,min:number,max:number}>} */
+    const editDraft = new Map();
+
+    function isDefaultSd(sd) {
+      const s = String(sd).toLowerCase();
+      return s === '0xffffff' || s === '16777215' || s === 'ffffff';
+    }
+
+    function showMsg(text, kind) {
+      msg.textContent = text || '';
+      msg.className = kind || '';
+    }
+
+    async function api(path, opts) {
+      const res = await fetch(path, opts);
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || res.statusText || `HTTP ${res.status}`);
+      return body;
+    }
+
+    function renderHosts(data) {
+      const ul = $('#hosts');
+      ul.innerHTML = '';
+      const bases = data.base_urls || [];
+      if (!bases.length) {
+        ul.innerHTML = '<li>No host IPs detected — use this page origin.</li>';
+        return;
+      }
+      for (const h of bases) {
+        const li = document.createElement('li');
+        li.innerHTML = `
+          <span class="kind">${h.kind || 'host'}</span>
+          <span class="iface">${h.iface || ''}</span>
+          <a href="${h.gui}" target="_blank" rel="noopener">${h.gui}</a>
+          <a href="${h.api}" target="_blank" rel="noopener">API</a>
+          <a href="${h.docs}" target="_blank" rel="noopener">Swagger</a>
+          <button type="button" class="secondary btn" data-copy="${h.gui}">Copy GUI URL</button>
+        `;
+        ul.appendChild(li);
+      }
+      ul.querySelectorAll('[data-copy]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          navigator.clipboard.writeText(btn.dataset.copy).then(() => showMsg('Copied URL', 'ok'));
+        });
+      });
+    }
+
+    function rowKey(s) {
+      return `${s.sst}|${s.sd}|${s.direction}`;
+    }
+
+    function fmtPct(v) {
+      if (v == null || Number.isNaN(Number(v))) return '—';
+      return Number(v).toFixed(1);
+    }
+
+    function liveFromSlice(s) {
+      return {
+        dedicated: Number(s.dedicated),
+        min: Number(s.min),
+        max: Number(s.max),
+      };
+    }
+
+    function draftFor(key, live) {
+      if (!editDraft.has(key)) {
+        editDraft.set(key, { ...live });
+      }
+      return editDraft.get(key);
+    }
+
+    function isDirty(tr, draft) {
+      const d = Number(tr.dataset.liveDedicated);
+      const mi = Number(tr.dataset.liveMin);
+      const ma = Number(tr.dataset.liveMax);
+      return draft.dedicated !== d || draft.min !== mi || draft.max !== ma;
+    }
+
+    function captureEditsFromDom() {
+      for (const tr of sliceBody.querySelectorAll('tr[data-key]')) {
+        const key = tr.dataset.key;
+        if (!key || isDefaultSd(tr.dataset.sd)) continue;
+        editDraft.set(key, {
+          dedicated: Number(tr.querySelector('[data-f="dedicated"]').value),
+          min: Number(tr.querySelector('[data-f="min"]').value),
+          max: Number(tr.querySelector('[data-f="max"]').value),
+        });
+      }
+    }
+
+    function userIsEditing() {
+      const el = document.activeElement;
+      return el && sliceBody.contains(el) && el.matches('.set input');
+    }
+
+    function renderMeta(snap) {
+      const slices = snap.slices || [];
+      const age = snap.indication_age_sec;
+      const ageText = age == null ? 'n/a' : `${Number(age).toFixed(1)}s`;
+      const stale = age == null || Number(age) >= 15;
+      meta.innerHTML = `
+        <span><strong>Source:</strong> ${snap.source || '—'}</span>
+        <span><strong>Indications:</strong> ${snap.indications ?? 0}</span>
+        <span><strong>Age:</strong> <span class="pill ${stale ? 'warn' : 'ok'}">${ageText}</span></span>
+        <span><strong>Slices:</strong> ${slices.length}</span>
+      `;
+      if (snap.note) meta.innerHTML += `<span class="pill warn">${snap.note}</span>`;
+    }
+
+    function updateLiveCells(tr, s) {
+      const live = liveFromSlice(s);
+      tr.dataset.liveDedicated = String(live.dedicated);
+      tr.dataset.liveMin = String(live.min);
+      tr.dataset.liveMax = String(live.max);
+      const liveTds = tr.querySelectorAll('td.live');
+      liveTds[0].textContent = String(s.sst);
+      liveTds[1].textContent = String(s.sd);
+      liveTds[2].textContent = String(s.direction);
+      liveTds[3].textContent = fmtPct(live.dedicated);
+      liveTds[4].textContent = fmtPct(live.min);
+      liveTds[5].textContent = fmtPct(live.max);
+      if (tr.dataset.ro !== '1') {
+        const draft = editDraft.get(tr.dataset.key) || live;
+        tr.classList.toggle('dirty', isDirty(tr, draft));
+      }
+    }
+
+    function wireRow(tr, key) {
+      if (tr.dataset.ro === '1') return;
+      const markDirty = () => {
+        const d = readRow(tr);
+        editDraft.set(key, { dedicated: d.dedicated, min: d.min, max: d.max });
+        tr.classList.toggle('dirty', isDirty(tr, editDraft.get(key)));
+      };
+      tr.querySelectorAll('.set input').forEach((inp) => {
+        inp.removeEventListener('input', inp._markDirty);
+        inp._markDirty = markDirty;
+        inp.addEventListener('input', markDirty);
+      });
+      const syncBtn = tr.querySelector('.syncRow');
+      if (syncBtn && !syncBtn.dataset.wired) {
+        syncBtn.dataset.wired = '1';
+        syncBtn.addEventListener('click', () => {
+          const l = liveFromSlice({
+            dedicated: tr.dataset.liveDedicated,
+            min: tr.dataset.liveMin,
+            max: tr.dataset.liveMax,
+          });
+          editDraft.set(key, { ...l });
+          tr.querySelector('[data-f="dedicated"]').value = l.dedicated;
+          tr.querySelector('[data-f="min"]').value = l.min;
+          tr.querySelector('[data-f="max"]').value = l.max;
+          tr.classList.remove('dirty');
+        });
+      }
+      const applyBtn = tr.querySelector('.applyRow');
+      if (applyBtn && !applyBtn.dataset.wired) {
+        applyBtn.dataset.wired = '1';
+        applyBtn.addEventListener('click', () => applyRow(tr));
+      }
+    }
+
+    function createRow(s) {
+      const key = rowKey(s);
+      const ro = isDefaultSd(s.sd);
+      const live = liveFromSlice(s);
+      const draft = draftFor(key, live);
+
+      const tr = document.createElement('tr');
+      tr.dataset.key = key;
+      tr.dataset.sd = String(s.sd);
+      tr.dataset.ro = ro ? '1' : '0';
+      tr.dataset.liveDedicated = String(live.dedicated);
+      tr.dataset.liveMin = String(live.min);
+      tr.dataset.liveMax = String(live.max);
+      if (!ro && isDirty(tr, draft)) tr.classList.add('dirty');
+
+      tr.innerHTML = `
+        <td class="live">${s.sst}</td>
+        <td class="live">${s.sd}</td>
+        <td class="live">${s.direction}</td>
+        <td class="live">${fmtPct(live.dedicated)}</td>
+        <td class="live">${fmtPct(live.min)}</td>
+        <td class="live">${fmtPct(live.max)}</td>
+        <td class="set"><input type="number" min="0" max="100" step="0.1" value="${draft.dedicated}" data-f="dedicated" ${ro ? 'disabled' : ''}/></td>
+        <td class="set"><input type="number" min="0" max="100" step="0.1" value="${draft.min}" data-f="min" ${ro ? 'disabled' : ''}/></td>
+        <td class="set"><input type="number" min="0" max="100" step="0.1" value="${draft.max}" data-f="max" ${ro ? 'disabled' : ''}/></td>
+        <td class="row-actions">
+          ${ro
+            ? '<span class="pill">default</span>'
+            : `<button type="button" class="secondary syncRow">Copy live</button>
+               <button type="button" class="applyRow">Apply</button>`}
+        </td>
+      `;
+      wireRow(tr, key);
+      return tr;
+    }
+
+    function renderSlices(snap, { forceRebuild = false } = {}) {
+      lastSnapshot = snap;
+      const slices = snap.slices || [];
+      renderMeta(snap);
+
+      if (!forceRebuild && userIsEditing()) {
+        // Keep Set inputs stable while the user is typing; only refresh meta.
+        return;
+      }
+
+      captureEditsFromDom();
+
+      if (!slices.length) {
+        sliceBody.innerHTML = '<tr><td colspan="10">No slice policy yet (waiting for E2 indication)</td></tr>';
+        editDraft.clear();
+        return;
+      }
+
+      const existing = new Map(
+        [...sliceBody.querySelectorAll('tr[data-key]')].map((tr) => [tr.dataset.key, tr]),
+      );
+      const seen = new Set();
+
+      if (forceRebuild || existing.size === 0 || sliceBody.querySelector('td[colspan]')) {
+        sliceBody.innerHTML = '';
+        for (const s of slices) {
+          seen.add(rowKey(s));
+          sliceBody.appendChild(createRow(s));
+        }
+      } else {
+        for (const s of slices) {
+          const key = rowKey(s);
+          seen.add(key);
+          let tr = existing.get(key);
+          if (tr) {
+            updateLiveCells(tr, s);
+          } else {
+            tr = createRow(s);
+            sliceBody.appendChild(tr);
+          }
+        }
+        for (const [key, tr] of existing) {
+          if (!seen.has(key)) tr.remove();
+        }
+      }
+
+      for (const key of [...editDraft.keys()]) {
+        if (!seen.has(key)) editDraft.delete(key);
+      }
+    }
+
+    function readRow(tr) {
+      return {
+        sst: Number(tr.querySelector('td.live').textContent),
+        sd: tr.querySelectorAll('td.live')[1].textContent.trim(),
+        direction: tr.querySelectorAll('td.live')[2].textContent.trim(),
+        dedicated: Number(tr.querySelector('[data-f="dedicated"]').value),
+        min: Number(tr.querySelector('[data-f="min"]').value),
+        max: Number(tr.querySelector('[data-f="max"]').value),
+      };
+    }
+
+    function editableRows() {
+      return [...sliceBody.querySelectorAll('tr[data-key]')].filter((tr) => tr.dataset.ro !== '1');
+    }
+
+    async function refresh() {
+      try {
+        const [hosts, snap] = await Promise.all([
+          api('/api/v1/hosts'),
+          api('/api/v1/slices'),
+        ]);
+        renderHosts(hosts);
+        renderSlices(snap);
+        showMsg('');
+      } catch (e) {
+        showMsg(e.message, 'err');
+      }
+    }
+
+    async function applyRow(tr) {
+      try {
+        const entry = readRow(tr);
+        const res = await api('/api/v1/slices', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(entry),
+        });
+        showMsg(`PATCH ok — sent ${res.sent?.length ?? 1} slice(s)`, 'ok');
+        editDraft.set(tr.dataset.key, {
+          dedicated: entry.dedicated,
+          min: entry.min,
+          max: entry.max,
+        });
+        await refresh();
+      } catch (e) {
+        showMsg(e.message, 'err');
+      }
+    }
+
+    async function applyAll() {
+      try {
+        captureEditsFromDom();
+        const slices = editableRows().map(readRow);
+        if (!slices.length) {
+          showMsg('No editable slices to SET', 'err');
+          return;
+        }
+        const res = await api('/api/v1/slices', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ slices }),
+        });
+        showMsg(`PUT ok — sent ${res.sent?.length ?? slices.length} slice(s)`, 'ok');
+        for (const tr of editableRows()) {
+          const e = readRow(tr);
+          editDraft.set(tr.dataset.key, {
+            dedicated: e.dedicated,
+            min: e.min,
+            max: e.max,
+          });
+        }
+        await refresh();
+      } catch (e) {
+        showMsg(e.message, 'err');
+      }
+    }
+
+    function syncAllEditsFromLive() {
+      if (!lastSnapshot?.slices?.length) return;
+      for (const s of lastSnapshot.slices) {
+        if (isDefaultSd(s.sd)) continue;
+        const key = rowKey(s);
+        editDraft.set(key, liveFromSlice(s));
+      }
+      renderSlices(lastSnapshot, { forceRebuild: true });
+      showMsg('Copied live values into Set columns', 'ok');
+    }
+
+    function schedule() {
+      if (timer) clearInterval(timer);
+      if ($('#autoRefresh').checked) timer = setInterval(refresh, 2000);
+    }
+
+    $('#refreshBtn').addEventListener('click', refresh);
+    $('#applyAllBtn').addEventListener('click', applyAll);
+    $('#syncEditsBtn').addEventListener('click', syncAllEditsFromLive);
+    $('#autoRefresh').addEventListener('change', schedule);
+    refresh();
+    schedule();
+  </script>
+</body>
+</html>

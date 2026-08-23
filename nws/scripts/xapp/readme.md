@@ -15,6 +15,7 @@ hangs after `DB filename`, check that the RIC is running.
 
 ## REST API (host network, port 18080)
 
+Slice GUI (live monitor + edit): [http://127.0.0.1:18080/gui](http://127.0.0.1:18080/gui)  
 Swagger UI on this host: [http://10.1.132.13:18080/docs](http://10.1.132.13:18080/docs)  
 (also [http://127.0.0.1:18080/docs](http://127.0.0.1:18080/docs))  
 OpenAPI JSON: [http://10.1.132.13:18080/openapi.json](http://10.1.132.13:18080/openapi.json)

@@ -83,7 +83,7 @@ services:
         image: oai-nr-ue:latest
         container_name: nws-oai-nr-ue1
         environment:
-            USE_ADDITIONAL_OPTIONS: -r 133 --numerology 1 -C 3325620000 --ssb 144 --rfsim --log_config.global_log_options level,nocolor,time --rfsimulator.serveraddr 192.168.201.140
+            USE_ADDITIONAL_OPTIONS: -r 133 --numerology 1 -C 3325620000 --ssb 144 --rfsim --log_config.global_log_options level,nocolor,time
             ASAN_OPTIONS: detect_leaks=0
         privileged: true
         cap_drop:
@@ -116,7 +116,7 @@ services:
         image: oai-nr-ue:latest
         container_name: nws-oai-nr-ue2
         environment:
-            USE_ADDITIONAL_OPTIONS: -r 133 --numerology 1 -C 3325620000 --ssb 144 --rfsim --log_config.global_log_options level,nocolor,time --rfsimulator.serveraddr 192.168.201.140
+            USE_ADDITIONAL_OPTIONS: -r 133 --numerology 1 -C 3325620000 --ssb 144 --rfsim --log_config.global_log_options level,nocolor,time
             ASAN_OPTIONS: detect_leaks=0
         privileged: true
         cap_drop:
@@ -149,7 +149,7 @@ services:
         image: oai-nr-ue:latest
         container_name: nws-oai-nr-ue3
         environment:
-            USE_ADDITIONAL_OPTIONS: -r 133 --numerology 1 -C 3325620000 --ssb 144 --rfsim --log_config.global_log_options level,nocolor,time --rfsimulator.serveraddr 192.168.201.140
+            USE_ADDITIONAL_OPTIONS: -r 133 --numerology 1 -C 3325620000 --ssb 144 --rfsim --log_config.global_log_options level,nocolor,time
             ASAN_OPTIONS: detect_leaks=0
         privileged: true
         cap_drop:
@@ -182,7 +182,7 @@ services:
         image: oai-nr-ue:latest
         container_name: nws-oai-nr-ue4
         environment:
-            USE_ADDITIONAL_OPTIONS: -r 133 --numerology 1 -C 3325620000 --ssb 144 --rfsim --log_config.global_log_options level,nocolor,time --rfsimulator.serveraddr 192.168.201.140
+            USE_ADDITIONAL_OPTIONS: -r 133 --numerology 1 -C 3325620000 --ssb 144 --rfsim --log_config.global_log_options level,nocolor,time
             ASAN_OPTIONS: detect_leaks=0
         privileged: true
         cap_drop:
@@ -215,7 +215,7 @@ services:
         image: oai-nr-ue:latest
         container_name: nws-oai-nr-ue5
         environment:
-            USE_ADDITIONAL_OPTIONS: -r 133 --numerology 1 -C 3325620000 --ssb 144 --rfsim --log_config.global_log_options level,nocolor,time --rfsimulator.serveraddr 192.168.201.140
+            USE_ADDITIONAL_OPTIONS: -r 133 --numerology 1 -C 3325620000 --ssb 144 --rfsim --log_config.global_log_options level,nocolor,time
             ASAN_OPTIONS: detect_leaks=0
         privileged: true
         cap_drop:

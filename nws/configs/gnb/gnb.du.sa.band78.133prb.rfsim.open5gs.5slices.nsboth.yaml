@@ -246,7 +246,7 @@ RUs:
     sdr_addrs: serial=XXXXXXX
 
 rfsimulator:
-  serveraddr: server
+  - serveraddr: server
 
 
   # preferred integrity algorithms
