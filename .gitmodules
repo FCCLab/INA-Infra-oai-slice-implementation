@@ -4,7 +4,7 @@
 	branch = main
 [submodule "openairinterface5g"]
 	path = openairinterface5g
-	url = https://github.com/FCCLab/openairinterface5g.git
+	url = https://github.com/FCCLab/openairinterface5g-duranta.git
 	branch = nw-slicing-3gpp
 [submodule "oai-cn5g-fed"]
 	path = oai-cn5g-fed
