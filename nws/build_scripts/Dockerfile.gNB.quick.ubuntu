@@ -51,8 +51,11 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt/oai-gnb/bin
-# Staged by build_oai_gnb_quick.sh (outside openairinterface5g .dockerignore)
+# Staged by build_oai_gnb_quick.sh (outside openairinterface5g .dockerignore).
+# OAI_BIN_SHA changes when the staged binary changes and busts BuildKit cache for COPY+.
+ARG OAI_BIN_SHA=unknown
 COPY nws/build_scripts/staging/nr-softmodem ./
+RUN echo "packaged nr-softmodem sha=${OAI_BIN_SHA}"
 COPY openairinterface5g/docker/scripts/gnb_entrypoint.sh ./entrypoint.sh
 COPY openairinterface5g/docker/scripts/check-prach-io.sh ./check-prach-io.sh
 

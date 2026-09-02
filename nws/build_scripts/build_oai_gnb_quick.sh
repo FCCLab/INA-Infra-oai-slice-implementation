@@ -1,7 +1,8 @@
 #!/bin/bash
-# Package oai-gnb from a local cmake build (no docker build_oai / ran-build recompile).
+# Quick oai-gnb: host cmake/ninja (incremental) -> stage binaries -> docker package.
+# Ninja tracks source changes; docker COPY invalidates image layers when staged files change.
 # Also runs incremental FlexRIC quick build (slice_sm etc.) unless --no-flexric.
-# Requires: ran-base:latest; staging/flexric from build_oai_flexric_quick.sh.
+# Requires: ran-base:latest; host cmake+ninja; staging/flexric from build_oai_flexric_quick.sh.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -20,14 +21,16 @@ FLEXRIC_QUICK_SH="${SCRIPT_DIR}/build_oai_flexric_quick.sh"
 NO_CACHE=0
 BUILD_LOCAL=1
 BUILD_FLEXRIC=1
+LOCK_FILE="${STAGING_DIR}/.build_oai_gnb_quick.lock"
 
 # gNB + UE must share librfsimulator (RFsim wire protocol).
 QUICK_CMAKE_TARGETS=(nr-softmodem nr-uesoftmodem rfsimulator)
 
 usage() {
     echo "Usage: $0 [--no-cache] [--no-local-build] [--no-flexric] [--flexric-only]"
+    echo "  Host cmake/ninja builds nr-softmodem, then docker packages staged binaries."
     echo "  --no-cache         docker build --no-cache for oai-gnb packaging layer"
-    echo "  --no-local-build   skip cmake build (nr-softmodem + runtime .so must already exist)"
+    echo "  --no-local-build   skip host cmake build (nr-softmodem + runtime .so must already exist)"
     echo "  --no-flexric       skip incremental FlexRIC build (use existing staging/flexric)"
     echo "  --flexric-only     only run build_oai_flexric_quick.sh"
 }
@@ -102,9 +105,73 @@ if [[ ! -d "${LOCAL_BUILD}" ]]; then
     exit 1
 fi
 
-if [[ "${BUILD_LOCAL}" -eq 1 ]]; then
-    echo "Building local targets: ${QUICK_CMAKE_TARGETS[*]}..."
+mkdir -p "${STAGING_DIR}"
+exec 9>"${LOCK_FILE}"
+if ! flock -n 9; then
+    echo "error: another build_oai_gnb_quick.sh is running (lock: ${LOCK_FILE})" >&2
+    exit 1
+fi
+
+cmake_build_requires_ccache() {
+    local cache="${LOCAL_BUILD}/CMakeCache.txt"
+    [[ -f "${cache}" ]] || return 1
+    # Only ACTIVE=ON means ninja will invoke ccache. CCACHE_FOUND alone is leftover cache.
+    grep -qE '^CCACHE_ACTIVE:BOOL=ON' "${cache}"
+}
+
+host_ccache_path() {
+    local cache="${LOCAL_BUILD}/CMakeCache.txt"
+    local path=""
+    if [[ -f "${cache}" ]]; then
+        path="$(grep -E '^CCACHE_FOUND:FILEPATH=' "${cache}" | cut -d= -f2-)"
+    fi
+    if [[ -z "${path}" ]]; then
+        command -v ccache 2>/dev/null || echo "/usr/bin/ccache"
+    else
+        echo "${path}"
+    fi
+}
+
+host_has_working_ccache() {
+    local ccache_path
+    ccache_path="$(host_ccache_path)"
+    [[ -n "${ccache_path}" && -x "${ccache_path}" ]] && "${ccache_path}" --version >/dev/null 2>&1
+}
+
+ensure_build_dir_writable() {
+    local probe="${LOCAL_BUILD}/.quick_build_write_probe"
+    if touch "${probe}" 2>/dev/null; then
+        rm -f "${probe}"
+        return 0
+    fi
+    local bad_file="${LOCAL_BUILD}/.ninja_deps"
+    [[ -e "${bad_file}" ]] || bad_file="${LOCAL_BUILD}"
+    echo "error: cannot write to ${LOCAL_BUILD} ($(stat -c '%U:%G %a' "${bad_file}" 2>/dev/null || echo 'permission denied'))" >&2
+    echo "This usually means a prior docker compile created root-owned files in the cmake build tree." >&2
+    echo "Fix: sudo chown -R $(id -un):$(id -gn) ${LOCAL_BUILD}" >&2
+    exit 1
+}
+
+ensure_host_cmake_ready() {
+    ensure_build_dir_writable
+    if ! command -v cmake >/dev/null 2>&1 || ! command -v ninja >/dev/null 2>&1; then
+        echo "error: host cmake and ninja are required for quick build" >&2
+        exit 1
+    fi
+    if cmake_build_requires_ccache && ! host_has_working_ccache; then
+        echo "Host ccache unavailable — reconfiguring ${LOCAL_BUILD} with CCACHE_ACTIVE=OFF..."
+        cmake "${LOCAL_BUILD}" -DCCACHE_ACTIVE=OFF
+    fi
+}
+
+run_host_cmake_build() {
+    ensure_host_cmake_ready
     cmake --build "${LOCAL_BUILD}" --target "${QUICK_CMAKE_TARGETS[@]}" -j"$(nproc)"
+}
+
+if [[ "${BUILD_LOCAL}" -eq 1 ]]; then
+    echo "Building on host: ${QUICK_CMAKE_TARGETS[*]}..."
+    run_host_cmake_build
 fi
 
 if [[ ! -f "${LOCAL_BIN}" ]]; then
@@ -112,11 +179,14 @@ if [[ ! -f "${LOCAL_BIN}" ]]; then
     exit 1
 fi
 
-mkdir -p "${STAGING_DIR}" "${STAGED_LIBS}"
+mkdir -p "${STAGED_LIBS}"
 rm -f "${STAGED_LIBS}"/*.so
-cp -f "${LOCAL_BIN}" "${STAGED_BIN}"
+# Atomic replace so Docker BuildKit always sees a new file content/mtime for COPY.
+cp -f "${LOCAL_BIN}" "${STAGED_BIN}.new"
+mv -f "${STAGED_BIN}.new" "${STAGED_BIN}"
 if [[ -f "${LOCAL_BUILD}/nr-uesoftmodem" ]]; then
-    cp -f "${LOCAL_BUILD}/nr-uesoftmodem" "${STAGED_UE_BIN}"
+    cp -f "${LOCAL_BUILD}/nr-uesoftmodem" "${STAGED_UE_BIN}.new"
+    mv -f "${STAGED_UE_BIN}.new" "${STAGED_UE_BIN}"
 fi
 cp -f "${LOCAL_BUILD}"/*.so "${STAGED_LIBS}/"
 
@@ -125,13 +195,22 @@ if [[ ! -f "${STAGED_LIBS}/librfsimulator.so" ]] || [[ ! -f "${STAGED_LIBS}/libp
     exit 1
 fi
 
-echo "Quick packaging oai-gnb:latest (local nr-softmodem + staged FlexRIC SM plugins)..."
+OAI_BIN_SHA="$(sha256sum "${STAGED_BIN}" | awk '{print $1}')"
+echo "Staged nr-softmodem sha256=${OAI_BIN_SHA}"
+if grep -aFq "feedback overdue" "${STAGED_BIN}"; then
+    echo "Staged nr-softmodem: UCI fix marker present"
+else
+    echo "warning: staged nr-softmodem missing 'feedback overdue' string (UCI fix may not be compiled in)" >&2
+fi
+
+echo "Quick packaging oai-gnb:latest (staged nr-softmodem + FlexRIC SM plugins)..."
 cd "${WORKSPACE_DIR}"
 
 BUILD_ARGS=(
     --target oai-gnb
     --tag oai-gnb:latest
     --file "${DOCKERFILE}"
+    --build-arg "OAI_BIN_SHA=${OAI_BIN_SHA}"
 )
 if [[ "${NO_CACHE}" -eq 1 ]]; then
     BUILD_ARGS+=(--no-cache)
@@ -153,4 +232,5 @@ else
     echo "warning: nr-uesoftmodem not staged — UE image not updated (RFsim may mismatch gNB)" >&2
 fi
 
-echo "Done. Restart nws-nearRT-RIC and nws-oai-gnb to pick up new images."
+echo "Done. Recreate RAN with bringup (do not docker restart — bind-mount configs in /tmp expire):"
+echo "  cd nws/scripts && ./bringup.py --no-build"

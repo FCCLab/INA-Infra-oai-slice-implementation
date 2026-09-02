@@ -751,10 +751,197 @@ def print_slice_config(gnb_yaml: Path, *, sch: str, ues: int) -> None:
     print()
 
 
-def patch_gnb_scheduler(src: Path, dst: Path, sch: str) -> None:
+SCENARIO_SLICE_RULES: dict[str, list[dict[str, object]]] = {
+    # 0. Baseline No Slicing / As-No-Slice Policy (0/0/100%)
+    "baseline_noslice": [
+        {"slice_id": 1, "sst": 1, "sd": "0x000001", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 2, "sst": 1, "sd": "0x000002", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 3, "sst": 1, "sd": "0x000003", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 4, "sst": 1, "sd": "0x000004", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 5, "sst": 1, "sd": "0x000005", "ded": 0.0, "min": 0.0, "max": 100.0},
+    ],
+    "as_no_slice": [
+        {"slice_id": 1, "sst": 1, "sd": "0x000001", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 2, "sst": 1, "sd": "0x000002", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 3, "sst": 1, "sd": "0x000003", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 4, "sst": 1, "sd": "0x000004", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 5, "sst": 1, "sd": "0x000005", "ded": 0.0, "min": 0.0, "max": 100.0},
+    ],
+    "as_no_slice_full": [
+        {"slice_id": 1, "sst": 1, "sd": "0x000001", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 2, "sst": 1, "sd": "0x000002", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 3, "sst": 1, "sd": "0x000003", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 4, "sst": 1, "sd": "0x000004", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 5, "sst": 1, "sd": "0x000005", "ded": 0.0, "min": 0.0, "max": 100.0},
+    ],
+    "as_no_slice_dl_udp": [
+        {"slice_id": 1, "sst": 1, "sd": "0x000001", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 2, "sst": 1, "sd": "0x000002", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 3, "sst": 1, "sd": "0x000003", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 4, "sst": 1, "sd": "0x000004", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 5, "sst": 1, "sd": "0x000005", "ded": 0.0, "min": 0.0, "max": 100.0},
+    ],
+    "as_no_slice_dl_tcp": [
+        {"slice_id": 1, "sst": 1, "sd": "0x000001", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 2, "sst": 1, "sd": "0x000002", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 3, "sst": 1, "sd": "0x000003", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 4, "sst": 1, "sd": "0x000004", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 5, "sst": 1, "sd": "0x000005", "ded": 0.0, "min": 0.0, "max": 100.0},
+    ],
+    "as_no_slice_ul_udp": [
+        {"slice_id": 1, "sst": 1, "sd": "0x000001", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 2, "sst": 1, "sd": "0x000002", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 3, "sst": 1, "sd": "0x000003", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 4, "sst": 1, "sd": "0x000004", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 5, "sst": 1, "sd": "0x000005", "ded": 0.0, "min": 0.0, "max": 100.0},
+    ],
+    "as_no_slice_ul_tcp": [
+        {"slice_id": 1, "sst": 1, "sd": "0x000001", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 2, "sst": 1, "sd": "0x000002", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 3, "sst": 1, "sd": "0x000003", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 4, "sst": 1, "sd": "0x000004", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 5, "sst": 1, "sd": "0x000005", "ded": 0.0, "min": 0.0, "max": 100.0},
+    ],
+    "no_slice": [
+        {"slice_id": 1, "sst": 1, "sd": "0x000001", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 2, "sst": 1, "sd": "0x000002", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 3, "sst": 1, "sd": "0x000003", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 4, "sst": 1, "sd": "0x000004", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 5, "sst": 1, "sd": "0x000005", "ded": 0.0, "min": 0.0, "max": 100.0},
+    ],
+    "no_slice_full": [
+        {"slice_id": 1, "sst": 1, "sd": "0x000001", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 2, "sst": 1, "sd": "0x000002", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 3, "sst": 1, "sd": "0x000003", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 4, "sst": 1, "sd": "0x000004", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 5, "sst": 1, "sd": "0x000005", "ded": 0.0, "min": 0.0, "max": 100.0},
+    ],
+    "no_slice_dl_udp": [
+        {"slice_id": 1, "sst": 1, "sd": "0x000001", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 2, "sst": 1, "sd": "0x000002", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 3, "sst": 1, "sd": "0x000003", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 4, "sst": 1, "sd": "0x000004", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 5, "sst": 1, "sd": "0x000005", "ded": 0.0, "min": 0.0, "max": 100.0},
+    ],
+    "no_slice_dl_tcp": [
+        {"slice_id": 1, "sst": 1, "sd": "0x000001", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 2, "sst": 1, "sd": "0x000002", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 3, "sst": 1, "sd": "0x000003", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 4, "sst": 1, "sd": "0x000004", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 5, "sst": 1, "sd": "0x000005", "ded": 0.0, "min": 0.0, "max": 100.0},
+    ],
+    "no_slice_ul_udp": [
+        {"slice_id": 1, "sst": 1, "sd": "0x000001", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 2, "sst": 1, "sd": "0x000002", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 3, "sst": 1, "sd": "0x000003", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 4, "sst": 1, "sd": "0x000004", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 5, "sst": 1, "sd": "0x000005", "ded": 0.0, "min": 0.0, "max": 100.0},
+    ],
+    "no_slice_ul_tcp": [
+        {"slice_id": 1, "sst": 1, "sd": "0x000001", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 2, "sst": 1, "sd": "0x000002", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 3, "sst": 1, "sd": "0x000003", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 4, "sst": 1, "sd": "0x000004", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 5, "sst": 1, "sd": "0x000005", "ded": 0.0, "min": 0.0, "max": 100.0},
+    ],
+
+    # 1. Dedicated Policy (15/15/15/15/15% or 15/15/15/15/7%)
+    "dedicated_sym_idle": [
+        {"slice_id": 1, "sst": 1, "sd": "0x000001", "ded": 15.0, "min": 15.0, "max": 15.0},
+        {"slice_id": 2, "sst": 1, "sd": "0x000002", "ded": 15.0, "min": 15.0, "max": 15.0},
+        {"slice_id": 3, "sst": 1, "sd": "0x000003", "ded": 15.0, "min": 15.0, "max": 15.0},
+        {"slice_id": 4, "sst": 1, "sd": "0x000004", "ded": 15.0, "min": 15.0, "max": 15.0},
+        {"slice_id": 5, "sst": 1, "sd": "0x000005", "ded": 15.0, "min": 15.0, "max": 15.0},
+    ],
+    "dedicated_sym_full": [
+        {"slice_id": 1, "sst": 1, "sd": "0x000001", "ded": 15.0, "min": 15.0, "max": 15.0},
+        {"slice_id": 2, "sst": 1, "sd": "0x000002", "ded": 15.0, "min": 15.0, "max": 15.0},
+        {"slice_id": 3, "sst": 1, "sd": "0x000003", "ded": 15.0, "min": 15.0, "max": 15.0},
+        {"slice_id": 4, "sst": 1, "sd": "0x000004", "ded": 15.0, "min": 15.0, "max": 15.0},
+        {"slice_id": 5, "sst": 1, "sd": "0x000005", "ded": 15.0, "min": 15.0, "max": 15.0},
+    ],
+    "dedicated_asym_idle": [
+        {"slice_id": 1, "sst": 1, "sd": "0x000001", "ded": 15.0, "min": 15.0, "max": 15.0},
+        {"slice_id": 2, "sst": 1, "sd": "0x000002", "ded": 15.0, "min": 15.0, "max": 15.0},
+        {"slice_id": 3, "sst": 1, "sd": "0x000003", "ded": 15.0, "min": 15.0, "max": 15.0},
+        {"slice_id": 4, "sst": 1, "sd": "0x000004", "ded": 15.0, "min": 15.0, "max": 15.0},
+        {"slice_id": 5, "sst": 1, "sd": "0x000005", "ded": 7.0, "min": 7.0, "max": 7.0},
+    ],
+    "dedicated_asym_full": [
+        {"slice_id": 1, "sst": 1, "sd": "0x000001", "ded": 15.0, "min": 15.0, "max": 15.0},
+        {"slice_id": 2, "sst": 1, "sd": "0x000002", "ded": 15.0, "min": 15.0, "max": 15.0},
+        {"slice_id": 3, "sst": 1, "sd": "0x000003", "ded": 15.0, "min": 15.0, "max": 15.0},
+        {"slice_id": 4, "sst": 1, "sd": "0x000004", "ded": 15.0, "min": 15.0, "max": 15.0},
+        {"slice_id": 5, "sst": 1, "sd": "0x000005", "ded": 7.0, "min": 7.0, "max": 7.0},
+    ],
+
+    # 2. Min Policy (20/20/20/20/20% or 20/20/20/20/10%)
+    "min_sym_idle": [
+        {"slice_id": 1, "sst": 1, "sd": "0x000001", "ded": 0.0, "min": 20.0, "max": 100.0},
+        {"slice_id": 2, "sst": 1, "sd": "0x000002", "ded": 0.0, "min": 20.0, "max": 100.0},
+        {"slice_id": 3, "sst": 1, "sd": "0x000003", "ded": 0.0, "min": 20.0, "max": 100.0},
+        {"slice_id": 4, "sst": 1, "sd": "0x000004", "ded": 0.0, "min": 20.0, "max": 100.0},
+        {"slice_id": 5, "sst": 1, "sd": "0x000005", "ded": 0.0, "min": 20.0, "max": 100.0},
+    ],
+    "min_sym_full": [
+        {"slice_id": 1, "sst": 1, "sd": "0x000001", "ded": 0.0, "min": 20.0, "max": 100.0},
+        {"slice_id": 2, "sst": 1, "sd": "0x000002", "ded": 0.0, "min": 20.0, "max": 100.0},
+        {"slice_id": 3, "sst": 1, "sd": "0x000003", "ded": 0.0, "min": 20.0, "max": 100.0},
+        {"slice_id": 4, "sst": 1, "sd": "0x000004", "ded": 0.0, "min": 20.0, "max": 100.0},
+        {"slice_id": 5, "sst": 1, "sd": "0x000005", "ded": 0.0, "min": 20.0, "max": 100.0},
+    ],
+    "min_asym_idle": [
+        {"slice_id": 1, "sst": 1, "sd": "0x000001", "ded": 0.0, "min": 20.0, "max": 100.0},
+        {"slice_id": 2, "sst": 1, "sd": "0x000002", "ded": 0.0, "min": 20.0, "max": 100.0},
+        {"slice_id": 3, "sst": 1, "sd": "0x000003", "ded": 0.0, "min": 20.0, "max": 100.0},
+        {"slice_id": 4, "sst": 1, "sd": "0x000004", "ded": 0.0, "min": 20.0, "max": 100.0},
+        {"slice_id": 5, "sst": 1, "sd": "0x000005", "ded": 0.0, "min": 10.0, "max": 100.0},
+    ],
+    "min_asym_full": [
+        {"slice_id": 1, "sst": 1, "sd": "0x000001", "ded": 0.0, "min": 20.0, "max": 100.0},
+        {"slice_id": 2, "sst": 1, "sd": "0x000002", "ded": 0.0, "min": 20.0, "max": 100.0},
+        {"slice_id": 3, "sst": 1, "sd": "0x000003", "ded": 0.0, "min": 20.0, "max": 100.0},
+        {"slice_id": 4, "sst": 1, "sd": "0x000004", "ded": 0.0, "min": 20.0, "max": 100.0},
+        {"slice_id": 5, "sst": 1, "sd": "0x000005", "ded": 0.0, "min": 10.0, "max": 100.0},
+    ],
+
+    # 3. Max Policy (100/100/100/100/100% or 100/100/100/50/50%)
+    "max_sym_idle": [
+        {"slice_id": 1, "sst": 1, "sd": "0x000001", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 2, "sst": 1, "sd": "0x000002", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 3, "sst": 1, "sd": "0x000003", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 4, "sst": 1, "sd": "0x000004", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 5, "sst": 1, "sd": "0x000005", "ded": 0.0, "min": 0.0, "max": 100.0},
+    ],
+    "max_sym_full": [
+        {"slice_id": 1, "sst": 1, "sd": "0x000001", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 2, "sst": 1, "sd": "0x000002", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 3, "sst": 1, "sd": "0x000003", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 4, "sst": 1, "sd": "0x000004", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 5, "sst": 1, "sd": "0x000005", "ded": 0.0, "min": 0.0, "max": 100.0},
+    ],
+    "max_asym_idle": [
+        {"slice_id": 1, "sst": 1, "sd": "0x000001", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 2, "sst": 1, "sd": "0x000002", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 3, "sst": 1, "sd": "0x000003", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 4, "sst": 1, "sd": "0x000004", "ded": 0.0, "min": 0.0, "max": 50.0},
+        {"slice_id": 5, "sst": 1, "sd": "0x000005", "ded": 0.0, "min": 0.0, "max": 50.0},
+    ],
+    "max_asym_full": [
+        {"slice_id": 1, "sst": 1, "sd": "0x000001", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 2, "sst": 1, "sd": "0x000002", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 3, "sst": 1, "sd": "0x000003", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 4, "sst": 1, "sd": "0x000004", "ded": 0.0, "min": 0.0, "max": 50.0},
+        {"slice_id": 5, "sst": 1, "sd": "0x000005", "ded": 0.0, "min": 0.0, "max": 50.0},
+    ],
+}
+
+
+def patch_gnb_scheduler(src: Path, dst: Path, sch: str, scenario: Optional[str] = None) -> None:
     """
     Rewrite scheduler fields for PF / NSUL / NSDL / NSBOTH.
     Also set legacy scheduler_type (1 if any direction is NS, else 0).
+    Optionally rewrite Slices block with scenario-specific PRB ratios.
     """
     text = src.read_text(encoding="utf-8")
     sch = sch.upper()
@@ -792,6 +979,36 @@ def patch_gnb_scheduler(src: Path, dst: Path, sch: str) -> None:
             count=1,
             flags=re.MULTILINE,
         )
+
+    # If scenario slice rules are specified, patch Slices block
+    rules = None
+    if scenario:
+        if scenario in SCENARIO_SLICE_RULES:
+            rules = SCENARIO_SLICE_RULES[scenario]
+        else:
+            base_key = re.sub(r'_(dl|ul)_(udp|tcp)$', '', scenario)
+            if base_key in SCENARIO_SLICE_RULES:
+                rules = SCENARIO_SLICE_RULES[base_key]
+
+    if rules is not None:
+        slice_lines = ["Slices:"]
+        slice_lines.append("  - slice_id: 0\n    sst: 1\n    sd: 0xffffff\n    dedicated_prb_ratio: 0.0\n    min_prb_ratio: 0.0\n    max_prb_ratio: 100.0")
+        for r in rules:
+            slice_lines.append(
+                f"  - slice_id: {r['slice_id']}\n"
+                f"    sst: {r['sst']}\n"
+                f"    sd: {r['sd']}\n"
+                f"    dedicated_prb_ratio: {r['ded']}\n"
+                f"    min_prb_ratio: {r['min']}\n"
+                f"    max_prb_ratio: {r['max']}"
+            )
+        new_slices_block = "\n".join(slice_lines) + "\n"
+        # Replace existing Slices block up to next top-level key (L1s, RUs, log_config, etc.)
+        slices_pattern = re.compile(r"^Slices:.*?(?=^[A-Za-z0-9_]+:|\Z)", re.MULTILINE | re.DOTALL)
+        if slices_pattern.search(text):
+            text = slices_pattern.sub(new_slices_block, text)
+        else:
+            text += "\n" + new_slices_block
 
     dst.write_text(text, encoding="utf-8")
 
@@ -1052,6 +1269,14 @@ def ensure_gnb(
 ) -> bool:
     services = services or [GNB_SERVICE]
     proc_by_service = proc_by_service or {GNB_SERVICE: "nr-softmodem"}
+
+    # Ensure all UEs are stopped before gNB starts to prevent early TCP socket collisions
+    for ue_idx in range(1, 6):
+        ue_name = f"nws-oai-nr-ue{ue_idx}"
+        if container_running(ue_name):
+            docker_exec(ue_name, ["pkill", "-9", "nr-uesoftmodem"])
+            subprocess.run(["docker", "stop", "-t", "1", ue_name], capture_output=True)
+
     ok, out = compose_up(compose, services, cwd=COMPOSE_DIR, build=build, step=step)
     if not ok:
         step.write((out or "")[-2000:] or "compose up failed")
@@ -1071,10 +1296,13 @@ def ensure_ues(
     timeout_s: float,
     step: Step,
 ) -> bool:
-    ok, out = compose_up(compose, ue_services, cwd=COMPOSE_DIR, build=False, step=step)
-    if not ok:
-        step.write((out or "")[-2000:] or "compose up failed")
-        return step.finish(False, "compose up failed")
+    for idx, name in enumerate(ue_services):
+        ok, out = compose_up(compose, [name], cwd=COMPOSE_DIR, build=False, step=step)
+        if not ok:
+            step.write((out or "")[-2000:] or f"{name}: compose up failed")
+            return step.finish(False, f"{name}: compose up failed")
+        if idx < len(ue_services) - 1:
+            time.sleep(2.0)
     for name in ue_services:
         if not wait_process(name, "nr-uesoftmodem", min(timeout_s, 180.0), log, step=step):
             return step.finish(False, f"{name}: nr-uesoftmodem not found")
@@ -1222,6 +1450,11 @@ def main() -> int:
         "--with-core",
         action="store_true",
         help="With 'down': also stop 5GC (nws-5gc)",
+    )
+    ap.add_argument(
+        "--scenario",
+        default=None,
+        help="Slicing test scenario name to configure slice ratios in gNB YAML",
     )
     ap.add_argument("--no-down-first", action="store_true", help="Skip RAN compose down before up")
     ap.add_argument(
@@ -1402,10 +1635,11 @@ def main() -> int:
     tmp_compose: Optional[Path] = None
     gnb_effective = gnb_src
     try:
-        # Patch scheduler when the selected stack YAML does not already match.
-        # --split uses dedicated static compose/YAML per sch (no temp patch).
+        # Patch scheduler when the selected stack YAML does not already match or when a scenario slice config is requested.
         need_patch = False
-        if not args.split:
+        if args.scenario:
+            need_patch = True
+        elif not args.split:
             if sch == "PF" and args.ues not in PF_DEDICATED:
                 need_patch = True
             elif sch == "NSDL" and args.ues not in NSDL_DEDICATED:
@@ -1417,7 +1651,7 @@ def main() -> int:
         if need_patch:
             tmpdir = tempfile.TemporaryDirectory(prefix="nws-bringup-")
             patched = Path(tmpdir.name) / gnb_src.name
-            patch_gnb_scheduler(gnb_src, patched, sch)
+            patch_gnb_scheduler(gnb_src, patched, sch, scenario=args.scenario)
             tmp_compose = COMPOSE_DIR / f".bringup-{Path(tmpdir.name).name}.yaml"
             write_patched_compose(compose, tmp_compose, gnb_src, patched)
             compose = tmp_compose
@@ -1505,6 +1739,9 @@ def main() -> int:
             proc_by_service=gnb_procs,
         ):
             return 1
+
+        # Wait for gNB rfsimulator server socket to be fully ready before starting UEs
+        time.sleep(4.0)
 
         if not ensure_ues(
             compose=compose,
