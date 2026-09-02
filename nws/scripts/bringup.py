@@ -569,8 +569,10 @@ def compose_up(
         str(compose_file.resolve()),
         "up",
         "-d",
-        "--remove-orphans",
+        "--no-recreate",
     ]
+    if not no_deps:
+        argv.append("--remove-orphans")
     if no_deps:
         argv.append("--no-deps")
     if build:
@@ -845,34 +847,34 @@ SCENARIO_SLICE_RULES: dict[str, list[dict[str, object]]] = {
         {"slice_id": 5, "sst": 1, "sd": "0x000005", "ded": 0.0, "min": 0.0, "max": 100.0},
     ],
 
-    # 1. Dedicated Policy (15/15/15/15/15% or 15/15/15/15/7%)
+    # 1. Dedicated Policy (15/15/15/15/15% or 15/15/15/15/7% dedicated, min=ded, max=100)
     "dedicated_sym_idle": [
-        {"slice_id": 1, "sst": 1, "sd": "0x000001", "ded": 15.0, "min": 15.0, "max": 15.0},
-        {"slice_id": 2, "sst": 1, "sd": "0x000002", "ded": 15.0, "min": 15.0, "max": 15.0},
-        {"slice_id": 3, "sst": 1, "sd": "0x000003", "ded": 15.0, "min": 15.0, "max": 15.0},
-        {"slice_id": 4, "sst": 1, "sd": "0x000004", "ded": 15.0, "min": 15.0, "max": 15.0},
-        {"slice_id": 5, "sst": 1, "sd": "0x000005", "ded": 15.0, "min": 15.0, "max": 15.0},
+        {"slice_id": 1, "sst": 1, "sd": "0x000001", "ded": 15.0, "min": 15.0, "max": 100.0},
+        {"slice_id": 2, "sst": 1, "sd": "0x000002", "ded": 15.0, "min": 15.0, "max": 100.0},
+        {"slice_id": 3, "sst": 1, "sd": "0x000003", "ded": 15.0, "min": 15.0, "max": 100.0},
+        {"slice_id": 4, "sst": 1, "sd": "0x000004", "ded": 15.0, "min": 15.0, "max": 100.0},
+        {"slice_id": 5, "sst": 1, "sd": "0x000005", "ded": 15.0, "min": 15.0, "max": 100.0},
     ],
     "dedicated_sym_full": [
-        {"slice_id": 1, "sst": 1, "sd": "0x000001", "ded": 15.0, "min": 15.0, "max": 15.0},
-        {"slice_id": 2, "sst": 1, "sd": "0x000002", "ded": 15.0, "min": 15.0, "max": 15.0},
-        {"slice_id": 3, "sst": 1, "sd": "0x000003", "ded": 15.0, "min": 15.0, "max": 15.0},
-        {"slice_id": 4, "sst": 1, "sd": "0x000004", "ded": 15.0, "min": 15.0, "max": 15.0},
-        {"slice_id": 5, "sst": 1, "sd": "0x000005", "ded": 15.0, "min": 15.0, "max": 15.0},
+        {"slice_id": 1, "sst": 1, "sd": "0x000001", "ded": 15.0, "min": 15.0, "max": 100.0},
+        {"slice_id": 2, "sst": 1, "sd": "0x000002", "ded": 15.0, "min": 15.0, "max": 100.0},
+        {"slice_id": 3, "sst": 1, "sd": "0x000003", "ded": 15.0, "min": 15.0, "max": 100.0},
+        {"slice_id": 4, "sst": 1, "sd": "0x000004", "ded": 15.0, "min": 15.0, "max": 100.0},
+        {"slice_id": 5, "sst": 1, "sd": "0x000005", "ded": 15.0, "min": 15.0, "max": 100.0},
     ],
     "dedicated_asym_idle": [
-        {"slice_id": 1, "sst": 1, "sd": "0x000001", "ded": 15.0, "min": 15.0, "max": 15.0},
-        {"slice_id": 2, "sst": 1, "sd": "0x000002", "ded": 15.0, "min": 15.0, "max": 15.0},
-        {"slice_id": 3, "sst": 1, "sd": "0x000003", "ded": 15.0, "min": 15.0, "max": 15.0},
-        {"slice_id": 4, "sst": 1, "sd": "0x000004", "ded": 15.0, "min": 15.0, "max": 15.0},
-        {"slice_id": 5, "sst": 1, "sd": "0x000005", "ded": 7.0, "min": 7.0, "max": 7.0},
+        {"slice_id": 1, "sst": 1, "sd": "0x000001", "ded": 15.0, "min": 15.0, "max": 100.0},
+        {"slice_id": 2, "sst": 1, "sd": "0x000002", "ded": 15.0, "min": 15.0, "max": 100.0},
+        {"slice_id": 3, "sst": 1, "sd": "0x000003", "ded": 15.0, "min": 15.0, "max": 100.0},
+        {"slice_id": 4, "sst": 1, "sd": "0x000004", "ded": 15.0, "min": 15.0, "max": 100.0},
+        {"slice_id": 5, "sst": 1, "sd": "0x000005", "ded": 7.0, "min": 7.0, "max": 100.0},
     ],
     "dedicated_asym_full": [
-        {"slice_id": 1, "sst": 1, "sd": "0x000001", "ded": 15.0, "min": 15.0, "max": 15.0},
-        {"slice_id": 2, "sst": 1, "sd": "0x000002", "ded": 15.0, "min": 15.0, "max": 15.0},
-        {"slice_id": 3, "sst": 1, "sd": "0x000003", "ded": 15.0, "min": 15.0, "max": 15.0},
-        {"slice_id": 4, "sst": 1, "sd": "0x000004", "ded": 15.0, "min": 15.0, "max": 15.0},
-        {"slice_id": 5, "sst": 1, "sd": "0x000005", "ded": 7.0, "min": 7.0, "max": 7.0},
+        {"slice_id": 1, "sst": 1, "sd": "0x000001", "ded": 15.0, "min": 15.0, "max": 100.0},
+        {"slice_id": 2, "sst": 1, "sd": "0x000002", "ded": 15.0, "min": 15.0, "max": 100.0},
+        {"slice_id": 3, "sst": 1, "sd": "0x000003", "ded": 15.0, "min": 15.0, "max": 100.0},
+        {"slice_id": 4, "sst": 1, "sd": "0x000004", "ded": 15.0, "min": 15.0, "max": 100.0},
+        {"slice_id": 5, "sst": 1, "sd": "0x000005", "ded": 7.0, "min": 7.0, "max": 100.0},
     ],
 
     # 2. Min Policy (20/20/20/20/20% or 20/20/20/20/10%)
@@ -927,7 +929,43 @@ SCENARIO_SLICE_RULES: dict[str, list[dict[str, object]]] = {
         {"slice_id": 4, "sst": 1, "sd": "0x000004", "ded": 0.0, "min": 0.0, "max": 50.0},
         {"slice_id": 5, "sst": 1, "sd": "0x000005", "ded": 0.0, "min": 0.0, "max": 50.0},
     ],
-    "max_asym_full": [
+    # Normalized base aliases
+    "dedicated_sym": [
+        {"slice_id": 1, "sst": 1, "sd": "0x000001", "ded": 15.0, "min": 15.0, "max": 100.0},
+        {"slice_id": 2, "sst": 1, "sd": "0x000002", "ded": 15.0, "min": 15.0, "max": 100.0},
+        {"slice_id": 3, "sst": 1, "sd": "0x000003", "ded": 15.0, "min": 15.0, "max": 100.0},
+        {"slice_id": 4, "sst": 1, "sd": "0x000004", "ded": 15.0, "min": 15.0, "max": 100.0},
+        {"slice_id": 5, "sst": 1, "sd": "0x000005", "ded": 15.0, "min": 15.0, "max": 100.0},
+    ],
+    "dedicated_asym": [
+        {"slice_id": 1, "sst": 1, "sd": "0x000001", "ded": 15.0, "min": 15.0, "max": 100.0},
+        {"slice_id": 2, "sst": 1, "sd": "0x000002", "ded": 15.0, "min": 15.0, "max": 100.0},
+        {"slice_id": 3, "sst": 1, "sd": "0x000003", "ded": 15.0, "min": 15.0, "max": 100.0},
+        {"slice_id": 4, "sst": 1, "sd": "0x000004", "ded": 15.0, "min": 15.0, "max": 100.0},
+        {"slice_id": 5, "sst": 1, "sd": "0x000005", "ded": 7.0, "min": 7.0, "max": 100.0},
+    ],
+    "min_sym": [
+        {"slice_id": 1, "sst": 1, "sd": "0x000001", "ded": 0.0, "min": 20.0, "max": 100.0},
+        {"slice_id": 2, "sst": 1, "sd": "0x000002", "ded": 0.0, "min": 20.0, "max": 100.0},
+        {"slice_id": 3, "sst": 1, "sd": "0x000003", "ded": 0.0, "min": 20.0, "max": 100.0},
+        {"slice_id": 4, "sst": 1, "sd": "0x000004", "ded": 0.0, "min": 20.0, "max": 100.0},
+        {"slice_id": 5, "sst": 1, "sd": "0x000005", "ded": 0.0, "min": 20.0, "max": 100.0},
+    ],
+    "min_asym": [
+        {"slice_id": 1, "sst": 1, "sd": "0x000001", "ded": 0.0, "min": 20.0, "max": 100.0},
+        {"slice_id": 2, "sst": 1, "sd": "0x000002", "ded": 0.0, "min": 20.0, "max": 100.0},
+        {"slice_id": 3, "sst": 1, "sd": "0x000003", "ded": 0.0, "min": 20.0, "max": 100.0},
+        {"slice_id": 4, "sst": 1, "sd": "0x000004", "ded": 0.0, "min": 20.0, "max": 100.0},
+        {"slice_id": 5, "sst": 1, "sd": "0x000005", "ded": 0.0, "min": 10.0, "max": 100.0},
+    ],
+    "max_sym": [
+        {"slice_id": 1, "sst": 1, "sd": "0x000001", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 2, "sst": 1, "sd": "0x000002", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 3, "sst": 1, "sd": "0x000003", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 4, "sst": 1, "sd": "0x000004", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 5, "sst": 1, "sd": "0x000005", "ded": 0.0, "min": 0.0, "max": 100.0},
+    ],
+    "max_asym": [
         {"slice_id": 1, "sst": 1, "sd": "0x000001", "ded": 0.0, "min": 0.0, "max": 100.0},
         {"slice_id": 2, "sst": 1, "sd": "0x000002", "ded": 0.0, "min": 0.0, "max": 100.0},
         {"slice_id": 3, "sst": 1, "sd": "0x000003", "ded": 0.0, "min": 0.0, "max": 100.0},
@@ -1297,12 +1335,12 @@ def ensure_ues(
     step: Step,
 ) -> bool:
     for idx, name in enumerate(ue_services):
-        ok, out = compose_up(compose, [name], cwd=COMPOSE_DIR, build=False, step=step)
+        ok, out = compose_up(compose, [name], cwd=COMPOSE_DIR, build=False, no_deps=True, step=step)
         if not ok:
             step.write((out or "")[-2000:] or f"{name}: compose up failed")
             return step.finish(False, f"{name}: compose up failed")
         if idx < len(ue_services) - 1:
-            time.sleep(2.0)
+            time.sleep(4.0)
     for name in ue_services:
         if not wait_process(name, "nr-uesoftmodem", min(timeout_s, 180.0), log, step=step):
             return step.finish(False, f"{name}: nr-uesoftmodem not found")

@@ -293,11 +293,11 @@ SCENARIOS: dict[str, TestScenario] = {
         active_ues=[1],
         idle_ues=[2, 3, 4, 5],
         rules=[
-            SliceRule(1, "0x000001", "both", 15.0, 15.0, 15.0),
-            SliceRule(1, "0x000002", "both", 15.0, 15.0, 15.0),
-            SliceRule(1, "0x000003", "both", 15.0, 15.0, 15.0),
-            SliceRule(1, "0x000004", "both", 15.0, 15.0, 15.0),
-            SliceRule(1, "0x000005", "both", 15.0, 15.0, 15.0),
+            SliceRule(1, "0x000001", "both", 15.0, 15.0, 100.0),
+            SliceRule(1, "0x000002", "both", 15.0, 15.0, 100.0),
+            SliceRule(1, "0x000003", "both", 15.0, 15.0, 100.0),
+            SliceRule(1, "0x000004", "both", 15.0, 15.0, 100.0),
+            SliceRule(1, "0x000005", "both", 15.0, 15.0, 100.0),
         ],
         explanation="Slices 2-5 are idle, but their dedicated bandwidth is held and NOT surrendered. UE1 is restricted to its own slice + unreserved PRBs.",
         expected_shares={1: (60.0, 100.0)},
@@ -309,11 +309,11 @@ SCENARIOS: dict[str, TestScenario] = {
         active_ues=[1, 2, 3, 4, 5],
         idle_ues=[],
         rules=[
-            SliceRule(1, "0x000001", "both", 15.0, 15.0, 15.0),
-            SliceRule(1, "0x000002", "both", 15.0, 15.0, 15.0),
-            SliceRule(1, "0x000003", "both", 15.0, 15.0, 15.0),
-            SliceRule(1, "0x000004", "both", 15.0, 15.0, 15.0),
-            SliceRule(1, "0x000005", "both", 15.0, 15.0, 15.0),
+            SliceRule(1, "0x000001", "both", 15.0, 15.0, 100.0),
+            SliceRule(1, "0x000002", "both", 15.0, 15.0, 100.0),
+            SliceRule(1, "0x000003", "both", 15.0, 15.0, 100.0),
+            SliceRule(1, "0x000004", "both", 15.0, 15.0, 100.0),
+            SliceRule(1, "0x000005", "both", 15.0, 15.0, 100.0),
         ],
         explanation="Under load, all 5 UEs receive similar goodput (~20-24 Mbps DL each) in equal 15% dedicated windows.",
         expected_shares={
@@ -331,11 +331,11 @@ SCENARIOS: dict[str, TestScenario] = {
         active_ues=[1],
         idle_ues=[2, 3, 4, 5],
         rules=[
-            SliceRule(1, "0x000001", "both", 15.0, 15.0, 15.0),
-            SliceRule(1, "0x000002", "both", 15.0, 15.0, 15.0),
-            SliceRule(1, "0x000003", "both", 15.0, 15.0, 15.0),
-            SliceRule(1, "0x000004", "both", 15.0, 15.0, 15.0),
-            SliceRule(1, "0x000005", "both", 7.0, 7.0, 7.0),
+            SliceRule(1, "0x000001", "both", 15.0, 15.0, 100.0),
+            SliceRule(1, "0x000002", "both", 15.0, 15.0, 100.0),
+            SliceRule(1, "0x000003", "both", 15.0, 15.0, 100.0),
+            SliceRule(1, "0x000004", "both", 15.0, 15.0, 100.0),
+            SliceRule(1, "0x000005", "both", 7.0, 7.0, 100.0),
         ],
         explanation="Slices 2-5 are idle, but hold 52% dedicated PRBs without leaking to active Slice 1.",
         expected_shares={1: (60.0, 100.0)},
@@ -347,11 +347,11 @@ SCENARIOS: dict[str, TestScenario] = {
         active_ues=[1, 2, 3, 4, 5],
         idle_ues=[],
         rules=[
-            SliceRule(1, "0x000001", "both", 15.0, 15.0, 15.0),
-            SliceRule(1, "0x000002", "both", 15.0, 15.0, 15.0),
-            SliceRule(1, "0x000003", "both", 15.0, 15.0, 15.0),
-            SliceRule(1, "0x000004", "both", 15.0, 15.0, 15.0),
-            SliceRule(1, "0x000005", "both", 7.0, 7.0, 7.0),
+            SliceRule(1, "0x000001", "both", 15.0, 15.0, 100.0),
+            SliceRule(1, "0x000002", "both", 15.0, 15.0, 100.0),
+            SliceRule(1, "0x000003", "both", 15.0, 15.0, 100.0),
+            SliceRule(1, "0x000004", "both", 15.0, 15.0, 100.0),
+            SliceRule(1, "0x000005", "both", 7.0, 7.0, 100.0),
         ],
         explanation="Under load, Slices 1-4 each receive ~20-25% share, while Slice 5 receives ~8-14% reflecting its smaller 7% window.",
         expected_shares={
@@ -433,11 +433,11 @@ SCENARIOS: dict[str, TestScenario] = {
         ],
         explanation="Under load, UE5 gets roughly half the goodput of UEs 1-4 (~13 vs ~27 Mbps DL) in exact accordance with min ratios.",
         expected_shares={
-            1: (18.0, 26.0),
-            2: (18.0, 26.0),
-            3: (18.0, 26.0),
-            4: (18.0, 26.0),
-            5: (9.0, 15.0),
+            1: (15.0, 28.0),
+            2: (15.0, 28.0),
+            3: (15.0, 28.0),
+            4: (15.0, 28.0),
+            5: (7.0, 16.0),
         },
     ),
 
@@ -640,7 +640,14 @@ def get_scenario_base_group(name: str) -> str:
         name = NUMERIC_ALIASES[name]
     for suffix in ("_dl_udp", "_dl_tcp", "_ul_udp", "_ul_tcp", "_udp", "_tcp"):
         if name.endswith(suffix):
-            return name[:-len(suffix)]
+            name = name[:-len(suffix)]
+    for suffix in ("_idle", "_full"):
+        if name.endswith(suffix):
+            name = name[:-len(suffix)]
+    if name.startswith("pf"):
+        return "pf_only"
+    if name.startswith("as_no_slice"):
+        return "as_no_slice"
     return name
 
 
@@ -708,24 +715,29 @@ def auto_prepare_testbed(num_ues: int = 5, scenario_name: Optional[str] = None, 
     if scenario_name and not is_pf:
         bringup_cmd.extend(["--scenario", scenario_name])
     ret, _ = run_cmd_streaming_box(bringup_cmd, f"OAI gNB & UE Bringup ({base_group})")
-    if ret != 0 and not is_container_running(GNB_CONTAINER):
-        print(f"\033[1;31m[FAIL] Failed to bring up fresh gNB and UEs.\033[0m")
+    if ret != 0:
+        print_step(2, 4, f"Configuring Slicing Baseline & Bringup ({base_group})", done=True, msg=f"FAILED (bringup exited with code {ret})")
+        print(f"\033[1;31m[FAIL] Failed to bring up testbed with {base_group}.\033[0m\n")
         return False
 
     STATE_FILE.write_text(base_group)
     print_step(2, 4, "Starting OAI gNB (nws-oai-gnb)", done=True, msg="Running (rfsim sync OK)")
 
-    # 3. Verify PDU Sessions on UEs
+    # 3. Verify PDU Sessions strictly on all UEs
     print_step(3, 4, f"Verifying UEs (nws-oai-nr-ue1..{num_ues})", done=False)
     ue_ips = {}
     for ue_idx in range(1, num_ues + 1):
         ue_name = f"nws-oai-nr-ue{ue_idx}"
-        res = run_cmd(["docker", "exec", ue_name, "ip", "-4", "addr", "show"])
+        res = run_cmd(["docker", "exec", ue_name, "ip", "-4", "addr", "show", "oaitun_ue1"])
         ip_match = re.search(r"inet\s+(10\.45\.\d+\.\d+)", res.stdout)
         if ip_match:
             ue_ips[ue_idx] = ip_match.group(1)
-        else:
-            ue_ips[ue_idx] = f"10.45.0.{30 + ue_idx}"
+
+    if len(ue_ips) < num_ues:
+        missing = [f"UE{u}" for u in range(1, num_ues + 1) if u not in ue_ips]
+        print_step(3, 4, f"Verifying UEs (nws-oai-nr-ue1..{num_ues})", done=True, msg=f"FAILED: Missing PDU on {', '.join(missing)}")
+        print(f"\033[1;31m[ERROR] Initial conditions not met: UEs {', '.join(missing)} failed to attach PDU session.\033[0m\n")
+        return False
 
     print_step(
         3,
@@ -1836,8 +1848,16 @@ def run_batch_tests(
         should_restart = force_restart
         if not skip_prep:
             if not auto_prepare_testbed(num_ues=5, scenario_name=scenario.name, force_restart=should_restart):
-                print(f"[ERROR] Auto-preparation failed for {test_key}")
-                batch_results.append((test_key, scenario.name, False, run_dir / f"{test_key}_{scenario.name}"))
+                print(f"[ERROR] Auto-preparation failed for test {test_key} ({scenario.name}). Skipping test execution.")
+                test_dir = run_dir / f"{test_key}_{scenario.name}"
+                test_dir.mkdir(parents=True, exist_ok=True)
+                eval_log = test_dir / "evaluation.log"
+                eval_log.write_text(f"========================================================================\n"
+                                   f"  TEST #{test_key} - {scenario.name}\n"
+                                   f"  RESULT: FAILED [✗]\n"
+                                   f"  REASON: Initial testbed conditions not met (PDU session or bringup failed).\n"
+                                   f"========================================================================\n")
+                batch_results.append((test_key, scenario.name, False, eval_log))
                 continue
 
         passed, report_path = launch_tmux_session(

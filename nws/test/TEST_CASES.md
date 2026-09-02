@@ -95,21 +95,21 @@ Pass 4: Shared Pool    (Remaining PRBs distributed proportionally)
 * **Pass Criteria:**
   - Equal ~12.0% – 32.0% share each with robust TCP flow control (~90+ Mbps total)
 
-### Group 200: Dedicated Policy (Pass 1 - Fixed Non-Shareable Reservation)
+### Group 200: Dedicated Policy (Pass 1 - Fixed Non-Shareable Reservation, min=ded, max=100%)
 
-#### Symmetric Idle (`15/15/15/15/15%` | UE1 active, UEs 2-5 idle)
+#### Symmetric Idle (`15/15/15/15/15% dedicated, min=15%, max=100%` | UE1 active, UEs 2-5 idle)
 - **201)** DL UDP | **202)** DL TCP | **203)** UL UDP | **204)** UL TCP
-- **Behavior:** Slices 2–5 hold 60% dedicated PRBs even when idle; UE1 is restricted to its own 15% slice + unreserved pool.
+- **Behavior:** Slices 2–5 hold 60% dedicated PRBs even when idle; UE1 is restricted to its own 15% slice + unreserved pool (up to 100% max).
 
-#### Symmetric Full (`15/15/15/15/15%` | UEs 1-5 active)
+#### Symmetric Full (`15/15/15/15/15% dedicated, min=15%, max=100%` | UEs 1-5 active)
 - **205)** DL UDP | **206)** DL TCP | **207)** UL UDP | **208)** UL TCP
 - **Behavior:** All 5 UEs compete equally and receive balanced ~15.0% – 25.0% share each.
 
-#### Asymmetric Idle (`15/15/15/15/7%` | UE1 active, UEs 2-5 idle)
+#### Asymmetric Idle (`15/15/15/15/7% dedicated, min=ded, max=100%` | UE1 active, UEs 2-5 idle)
 - **211)** DL UDP | **212)** DL TCP | **213)** UL UDP | **214)** UL TCP
 - **Behavior:** Slices 2–5 hold 52% dedicated PRBs without leaking to UE1.
 
-#### Asymmetric Full (`15/15/15/15/7%` | UEs 1-5 active)
+#### Asymmetric Full (`15/15/15/15/7% dedicated, min=ded, max=100%` | UEs 1-5 active)
 - **215)** DL UDP | **216)** DL TCP | **217)** UL UDP | **218)** UL TCP
 - **Behavior:** Slices 1–4 each receive 18.0% – 26.0% share; Slice 5 receives 7.0% – 14.0% share.
 
