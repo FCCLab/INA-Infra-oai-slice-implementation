@@ -740,10 +740,27 @@ def auto_prepare_testbed(num_ues: int = 5, scenario_name: Optional[str] = None, 
     return True
 
 
-def setup_test_logging(sc: TestScenario, direction: str) -> Path:
-    """Create dedicated timestamped log folder and summary for the test run."""
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    test_log_dir = LOGS_DIR / f"{sc.name}_{timestamp}"
+def setup_test_logging(
+    sc: TestScenario,
+    direction: str,
+    run_dir: Optional[Path] = None,
+    test_idx: Optional[str] = None,
+) -> Path:
+    """Create dedicated timestamped log folder for the run and individual test case."""
+    if run_dir is None:
+        run_ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        run_dir = LOGS_DIR / f"run_{run_ts}"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        latest_link = LOGS_DIR / "latest"
+        if latest_link.is_symlink() or latest_link.exists():
+            latest_link.unlink()
+        try:
+            latest_link.symlink_to(run_dir.relative_to(LOGS_DIR))
+        except Exception:
+            pass
+
+    prefix = f"{test_idx}_" if test_idx else ""
+    test_log_dir = run_dir / f"{prefix}{sc.name}"
     test_log_dir.mkdir(parents=True, exist_ok=True)
 
     summary_file = test_log_dir / "test_summary.log"
@@ -762,14 +779,6 @@ def setup_test_logging(sc: TestScenario, direction: str) -> Path:
         for r in sc.rules:
             f.write(f"  - Slice (SST={r.sst}, SD={r.sd}): dedicated={r.dedicated}%, min={r.min_ratio}%, max={r.max_ratio}%\n")
         f.write("========================================================================\n")
-
-    latest_link = LOGS_DIR / "latest"
-    if latest_link.is_symlink() or latest_link.exists():
-        latest_link.unlink()
-    try:
-        latest_link.symlink_to(test_log_dir.relative_to(LOGS_DIR))
-    except Exception:
-        pass
 
     return test_log_dir
 
@@ -1418,19 +1427,24 @@ def evaluate_test_results(
     print(f"  Test Summary (Abs Path): \033[1;33m{summary_abs_path}\033[0m")
     print(f"  Log Directory:           \033[1;36m{log_dir_abs_path}\033[0m")
     print("========================================================================\n")
-    return passed
+    return passed, report_abs_path
 
 
-
-
-
-def launch_tmux_session(sc: TestScenario, direction: str, duration: int, attach: bool = False, no_attach: bool = False):
+def launch_tmux_session(
+    sc: TestScenario,
+    direction: str,
+    duration: int,
+    attach: bool = False,
+    no_attach: bool = False,
+    run_dir: Optional[Path] = None,
+    test_idx: Optional[str] = None,
+) -> tuple[bool, Path]:
     """Launch the 2-tab tmux visual testing session (servers & clients) with dedicated logging."""
     if not shutil.which("tmux"):
         print("[ERROR] tmux is not installed. Please install tmux (sudo apt install tmux).", file=sys.stderr)
         sys.exit(1)
 
-    log_dir = setup_test_logging(sc, direction)
+    log_dir = setup_test_logging(sc, direction, run_dir=run_dir, test_idx=test_idx)
     mac_log = log_dir / "mac_stats.log"
     ue1_log = log_dir / "ue1_traffic.log"
     ue2_log = log_dir / "ue2_traffic.log"
@@ -1579,8 +1593,8 @@ def launch_tmux_session(sc: TestScenario, direction: str, duration: int, attach:
 
     try:
         measured = sample_live_traffic_countdown(sc, dir_val, duration, mac_log, log_dir)
-        passed = evaluate_test_results(sc, measured, log_dir, duration=duration, direction=dir_val)
-        return passed
+        passed, report_path = evaluate_test_results(sc, measured, log_dir, duration=duration, direction=dir_val)
+        return passed, report_path
     finally:
         for p in traffic_procs:
             try:
@@ -1730,22 +1744,46 @@ def parse_test_arguments(test_args: list[str]) -> list[str]:
     return expanded or ["as_no_slice"]
 
 
-def print_batch_summary_report(batch_results: list[tuple[str, str, bool, str]]):
-    """Print consolidated summary table for batch test runs."""
+def print_batch_summary_report(batch_results: list[tuple[str, str, bool, Path]], run_dir: Optional[Path] = None):
+    """Print consolidated summary table for batch test runs with clickable absolute report links."""
     print("\n========================================================================")
     print("                      BATCH EXECUTION SUMMARY REPORT")
     print("========================================================================")
     passed_cnt = 0
-    for idx, (t_key, s_name, passed, note) in enumerate(batch_results, 1):
+    for idx, (t_key, s_name, passed, rep_path) in enumerate(batch_results, 1):
         status_str = "\033[1;32mPASSED [✓]\033[0m" if passed else "\033[1;31mFAILED [✗]\033[0m"
         if passed:
             passed_cnt += 1
-        print(f"  [{idx:2d}] Test {t_key:<4} ({s_name:<32}): {status_str}")
+        abs_uri = Path(rep_path).resolve()
+        print(f"  [{idx:2d}] Test {t_key:<4} ({s_name:<30}): {status_str}")
+        print(f"       \033[1;34mDetailed Report:\033[0m {abs_uri}")
     print("------------------------------------------------------------------------")
     total_cnt = len(batch_results)
     rate_pct = (passed_cnt * 100 // total_cnt) if total_cnt > 0 else 0
     print(f"  TOTAL EXECUTED: {total_cnt} | PASSED: {passed_cnt} | FAILED: {total_cnt - passed_cnt} | SUCCESS RATE: {passed_cnt}/{total_cnt} ({rate_pct}%)")
+    if run_dir:
+        print(f"  RUN DIRECTORY:  \033[1;36m{run_dir.resolve()}\033[0m")
     print("========================================================================\n\n")
+
+    # Save run_summary.log inside the dedicated run folder
+    if run_dir:
+        summary_lines = [
+            "========================================================================",
+            "                      BATCH EXECUTION SUMMARY REPORT",
+            "========================================================================",
+        ]
+        for idx, (t_key, s_name, passed, rep_path) in enumerate(batch_results, 1):
+            st = "PASSED [OK]" if passed else "FAILED [FAIL]"
+            summary_lines.append(f"  [{idx:2d}] Test {t_key:<4} ({s_name:<30}): {st}")
+            summary_lines.append(f"       Detailed Report: {Path(rep_path).resolve()}")
+        summary_lines.append("------------------------------------------------------------------------")
+        summary_lines.append(f"  TOTAL EXECUTED: {total_cnt} | PASSED: {passed_cnt} | FAILED: {total_cnt - passed_cnt} | SUCCESS RATE: {passed_cnt}/{total_cnt} ({rate_pct}%)")
+        summary_lines.append(f"  RUN DIRECTORY:  {run_dir.resolve()}")
+        summary_lines.append("========================================================================\n")
+        try:
+            (run_dir / "run_summary.log").write_text("\n".join(summary_lines))
+        except Exception:
+            pass
 
 
 def run_batch_tests(
@@ -1759,8 +1797,21 @@ def run_batch_tests(
     proto_override: Optional[str] = None,
     bitrate: Optional[str] = None,
     streams: int = 5,
-) -> list[tuple[str, str, bool, str]]:
-    """Execute a list of scenario keys sequentially within the unified tmux session."""
+) -> list[tuple[str, str, bool, Path]]:
+    """Execute a list of scenario keys sequentially within a dedicated timestamped run folder."""
+    run_ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_dir = LOGS_DIR / f"run_{run_ts}"
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    # Update latest symlink to point to this dedicated run directory
+    latest_link = LOGS_DIR / "latest"
+    if latest_link.is_symlink() or latest_link.exists():
+        latest_link.unlink()
+    try:
+        latest_link.symlink_to(run_dir.relative_to(LOGS_DIR))
+    except Exception:
+        pass
+
     batch_results = []
     for idx, test_key in enumerate(test_keys, 1):
         if test_key not in SCENARIOS:
@@ -1781,19 +1832,27 @@ def run_batch_tests(
             print(f"========================================================================\033[0m")
 
         # Step 1-3: Auto-preparation with scenario-specific slice configuration
-        # Always force restart gNB and UEs on the 1st test; subsequent tests reuse if same slice config
-        should_restart = force_restart or (idx == 1)
+        # Reuse running gNB & UEs if slice configuration is identical; restart only if config changed or containers down
+        should_restart = force_restart
         if not skip_prep:
             if not auto_prepare_testbed(num_ues=5, scenario_name=scenario.name, force_restart=should_restart):
                 print(f"[ERROR] Auto-preparation failed for {test_key}")
-                batch_results.append((test_key, scenario.name, False, "Preparation Failed"))
+                batch_results.append((test_key, scenario.name, False, run_dir / f"{test_key}_{scenario.name}"))
                 continue
 
-        passed = launch_tmux_session(scenario, scenario.direction, duration, attach=attach, no_attach=no_attach)
-        batch_results.append((test_key, scenario.name, passed, "OK"))
+        passed, report_path = launch_tmux_session(
+            scenario,
+            scenario.direction,
+            duration,
+            attach=attach,
+            no_attach=no_attach,
+            run_dir=run_dir,
+            test_idx=str(test_key),
+        )
+        batch_results.append((test_key, scenario.name, passed, report_path))
 
     if len(test_keys) > 1:
-        print_batch_summary_report(batch_results)
+        print_batch_summary_report(batch_results, run_dir=run_dir)
     return batch_results
 
 
