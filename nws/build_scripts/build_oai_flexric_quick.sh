@@ -82,6 +82,36 @@ ensure_builder_image() {
     fi
 }
 
+# Host asn1c (FlexRIC Dockerfile installs to /opt/asn1c; quick builder image often omits it).
+HOST_ASN1C_PREFIX="${HOST_ASN1C_PREFIX:-/opt/asn1c}"
+ASN1C_EXEC_IN_CONTAINER="/opt/asn1c/bin/asn1c"
+
+docker_flexric_run() {
+    # Usage: docker_flexric_run <bash -lc args...>
+    local mounts=(-v "${FLEXRIC_DIR}:/flexric")
+    if [[ -x "${HOST_ASN1C_PREFIX}/bin/asn1c" ]]; then
+        mounts+=(-v "${HOST_ASN1C_PREFIX}:/opt/asn1c:ro")
+    fi
+    docker run --rm \
+        "${mounts[@]}" \
+        -w /flexric/build \
+        "${BUILDER_IMAGE}" \
+        "$@"
+}
+
+ensure_host_asn1c() {
+    if [[ -x "${HOST_ASN1C_PREFIX}/bin/asn1c" ]]; then
+        return 0
+    fi
+    if docker run --rm "${BUILDER_IMAGE}" bash -lc "test -x ${ASN1C_EXEC_IN_CONTAINER}"; then
+        return 0
+    fi
+    echo "error: asn1c not found at ${HOST_ASN1C_PREFIX}/bin/asn1c and not in ${BUILDER_IMAGE}." >&2
+    echo "  FlexRIC needs asn1c to generate examples/.../RRC_MESSAGES (xapp_sdk / e42_xapp_db)." >&2
+    echo "  Install mouse07410 asn1c to ${HOST_ASN1C_PREFIX}, or rebuild builder from Dockerfile.flexric.ubuntu (--force-builder)." >&2
+    exit 1
+}
+
 # Ubuntu noble/multiarch: FindCURL needs pkg-config (or explicit -DCURL_*) when cmake
 # regenerates during ninja. Older builder images may lack these packages.
 ensure_builder_curl_deps() {
@@ -110,12 +140,12 @@ EOF
 # Resolve CURL paths inside the container so cmake regenerate cannot fail FindCURL.
 flexric_cmake_configure() {
     mkdir -p "${BUILD_DIR}"
-    docker run --rm \
-        -v "${FLEXRIC_DIR}:/flexric" \
-        -w /flexric/build \
-        "${BUILDER_IMAGE}" \
-        bash -lc "
+    docker_flexric_run bash -lc "
 set -euo pipefail
+if [[ ! -x ${ASN1C_EXEC_IN_CONTAINER} ]]; then
+  echo 'error: ${ASN1C_EXEC_IN_CONTAINER} missing in container (mount host ${HOST_ASN1C_PREFIX})' >&2
+  exit 1
+fi
 # Prefer exact multiarch paths; avoid 'ls a b' (missing path => rc=2 + pipefail silent exit).
 CURL_H=
 for cand in /usr/include/curl/curl.h /usr/include/*/curl/curl.h; do
@@ -135,13 +165,14 @@ if [[ -z \"\${CURL_LIBRARY}\" ]]; then
   echo 'error: libcurl.so not found in ${BUILDER_IMAGE}' >&2
   exit 1
 fi
-echo \"FlexRIC cmake: CURL_INCLUDE_DIR=\${CURL_INCLUDE_DIR} CURL_LIBRARY=\${CURL_LIBRARY}\"
+echo \"FlexRIC cmake: ASN1C=${ASN1C_EXEC_IN_CONTAINER} CURL_INCLUDE_DIR=\${CURL_INCLUDE_DIR} CURL_LIBRARY=\${CURL_LIBRARY}\"
 cmake -GNinja -DCMAKE_BUILD_TYPE=Release \
   -DE2AP_VERSION=${E2AP_VERSION} \
   -DKPM_VERSION=${KPM_VERSION} \
   -DXAPP_MULTILANGUAGE=ON \
   -DCMAKE_C_COMPILER=gcc-12 \
   -DCMAKE_CXX_COMPILER=g++-12 \
+  -DASN1C_EXEC=${ASN1C_EXEC_IN_CONTAINER} \
   -DCURL_INCLUDE_DIR=\"\${CURL_INCLUDE_DIR}\" \
   -DCURL_LIBRARY=\"\${CURL_LIBRARY}\" \
   ..
@@ -160,6 +191,14 @@ configure_flexric_if_needed() {
         "${BUILD_DIR}/CMakeCache.txt" 2>/dev/null; then
         echo "FlexRIC CMakeCache has CURL NOTFOUND — reconfiguring..."
         need_cfg=1
+    elif grep -qE '^ASN1C_EXEC(_PATH)?:.*=.*NOTFOUND' \
+        "${BUILD_DIR}/CMakeCache.txt" 2>/dev/null; then
+        echo "FlexRIC CMakeCache has ASN1C NOTFOUND — reconfiguring..."
+        need_cfg=1
+    elif ! grep -qE "^ASN1C_EXEC(_PATH)?:FILEPATH=${ASN1C_EXEC_IN_CONTAINER}\$" \
+        "${BUILD_DIR}/CMakeCache.txt" 2>/dev/null; then
+        echo "FlexRIC CMakeCache ASN1C path stale — reconfiguring..."
+        need_cfg=1
     fi
     if [[ "${need_cfg}" -eq 1 ]]; then
         echo "Configuring FlexRIC cmake in ${BUILD_DIR}..."
@@ -172,11 +211,7 @@ run_flexric_ninja() {
     local ninja_log
     ninja_log="$(mktemp)"
     set +e
-    docker run --rm \
-        -v "${FLEXRIC_DIR}:/flexric" \
-        -w /flexric/build \
-        "${BUILDER_IMAGE}" \
-        bash -lc "ninja ${FLEXRIC_NINJA_TARGETS[*]} -j\$(nproc)" 2>&1 | tee "${ninja_log}"
+    docker_flexric_run bash -lc "ninja ${FLEXRIC_NINJA_TARGETS[*]} -j\$(nproc)" 2>&1 | tee "${ninja_log}"
     local rc=${PIPESTATUS[0]}
     set -e
     if [[ "${rc}" -ne 0 ]]; then
@@ -184,11 +219,13 @@ run_flexric_ninja() {
             echo "ninja cmake regenerate failed FindCURL — reconfiguring with explicit CURL paths and retrying..."
             flexric_cmake_configure
             rm -f "${ninja_log}"
-            docker run --rm \
-                -v "${FLEXRIC_DIR}:/flexric" \
-                -w /flexric/build \
-                "${BUILDER_IMAGE}" \
-                bash -lc "ninja ${FLEXRIC_NINJA_TARGETS[*]} -j\$(nproc)"
+            docker_flexric_run bash -lc "ninja ${FLEXRIC_NINJA_TARGETS[*]} -j\$(nproc)"
+        elif grep -qE 'ASN1C_EXEC_PATH-NOTFOUND|asn1c: No such file|RRC_MESSAGES/.*No such file' "${ninja_log}"; then
+            echo "ninja missing asn1c / RRC ASN sources — reconfiguring with host asn1c and retrying..."
+            ensure_host_asn1c
+            flexric_cmake_configure
+            rm -f "${ninja_log}"
+            docker_flexric_run bash -lc "ninja ${FLEXRIC_NINJA_TARGETS[*]} -j\$(nproc)"
         else
             rm -f "${ninja_log}"
             exit "${rc}"
@@ -262,8 +299,57 @@ stage_flexric_artifacts() {
     ls -la "${STAGING_DIR}/lib/flexric/"
 }
 
+print_flexric_build_summary() {
+    echo
+    echo "======== FlexRIC quick-build summary ========"
+    echo "FlexRIC source : ${FLEXRIC_DIR}"
+    echo "Build dir      : ${BUILD_DIR}"
+    echo "Staging        : ${STAGING_DIR}"
+    echo
+    echo "Ninja targets  : ${FLEXRIC_NINJA_TARGETS[*]}"
+    echo
+    echo "Binaries / libs (build tree):"
+    local f
+    for f in \
+        "${BUILD_DIR}/examples/ric/nearRT-RIC" \
+        "${BUILD_DIR}/src/xApp/libe42_xapp_shared.so" \
+        "${BUILD_DIR}/examples/xApp/python3/xapp_sdk.py"
+    do
+        if [[ -e "${f}" ]]; then
+            ls -lh "${f}" | awk '{printf "  %-10s  %s  %s %s %s\n", $5, $6, $7, $8, $9}'
+        else
+            echo "  MISSING     ${f}"
+        fi
+    done
+    shopt -s nullglob
+    local sdk_sos=( "${BUILD_DIR}/examples/xApp/python3"/_xapp_sdk*.so )
+    shopt -u nullglob
+    if [[ ${#sdk_sos[@]} -gt 0 ]]; then
+        for f in "${sdk_sos[@]}"; do
+            ls -lh "${f}" | awk '{printf "  %-10s  %s  %s %s %s\n", $5, $6, $7, $8, $9}'
+        done
+    else
+        echo "  MISSING     ${BUILD_DIR}/examples/xApp/python3/_xapp_sdk*.so"
+    fi
+    echo
+    echo "Service-model plugins (staged):"
+    if [[ -d "${STAGING_DIR}/lib/flexric" ]]; then
+        ls -lh "${STAGING_DIR}/lib/flexric"/lib*_sm.so 2>/dev/null \
+            | awk '{printf "  %-10s  %s\n", $5, $9}' \
+            || echo "  (none)"
+    else
+        echo "  (staging dir missing)"
+    fi
+    echo
+    echo "Docker images:"
+    docker images --format '  {{.Repository}}:{{.Tag}}\t{{.Size}}\t{{.CreatedSince}}' \
+        | grep -E '^  oai-flexric:' || echo "  (oai-flexric image not found)"
+    echo "============================================="
+}
+
 ensure_builder_image
 ensure_builder_curl_deps
+ensure_host_asn1c
 
 if [[ "${BUILD_LOCAL}" -eq 1 ]]; then
     configure_flexric_if_needed
@@ -288,3 +374,4 @@ docker build "${BUILD_ARGS[@]}" .
 
 docker tag oai-flexric:latest "oai-flexric:latest-${ARCH_TAG}"
 echo "Successfully quick-built oai-flexric:latest (${ARCH_TAG})"
+print_flexric_build_summary

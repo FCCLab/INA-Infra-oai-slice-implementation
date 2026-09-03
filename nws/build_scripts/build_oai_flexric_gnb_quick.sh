@@ -226,11 +226,31 @@ docker tag oai-du:latest oai-du:latest-"${ARCH_TAG}"
 
 echo "Successfully quick-built oai-gnb from ${LOCAL_BIN} (${ARCH_TAG})"
 
+UE_BUILT=0
 if [[ -f "${STAGED_UE_BIN}" ]] && [[ -f "${UE_QUICK_SH}" ]]; then
     bash "${UE_QUICK_SH}" $([[ "${NO_CACHE}" -eq 1 ]] && echo --no-cache)
+    UE_BUILT=1
 else
     echo "warning: nr-uesoftmodem not staged — UE image not updated (RFsim may mismatch gNB)" >&2
 fi
 
-echo "Done. Recreate RAN with bringup (do not docker restart — bind-mount configs in /tmp expire):"
-echo "  cd nws/scripts && ./bringup.py --no-build"
+echo
+echo "======== quick-build summary ========"
+echo "FlexRIC : $([[ "${BUILD_FLEXRIC}" -eq 1 ]] && echo built || echo skipped)"
+echo "Host    : $([[ "${BUILD_LOCAL}" -eq 1 ]] && echo "built ${QUICK_CMAKE_TARGETS[*]}" || echo skipped)"
+echo "UE img  : $([[ "${UE_BUILT}" -eq 1 ]] && echo updated || echo skipped)"
+echo
+echo "Built Docker images:"
+printf '  %-28s  %-14s  %-10s  %s\n' "IMAGE" "ID" "SIZE" "CREATED"
+img_lines="$(docker images --format '{{.Repository}}:{{.Tag}}\t{{.ID}}\t{{.Size}}\t{{.CreatedSince}}' \
+    | grep -E '^(oai-gnb|oai-cucp|oai-du|oai-nr-ue|oai-flexric):' || true)"
+if [[ -z "${img_lines}" ]]; then
+    echo "  (none found)"
+else
+    while IFS=$'\t' read -r img id size created; do
+        printf '  %-28s  %-14s  %-10s  %s\n' "${img}" "${id}" "${size}" "${created}"
+    done <<<"${img_lines}"
+fi
+echo
+echo "Next: cd nws/scripts && ./bringup.py --no-build"
+echo "===================================="

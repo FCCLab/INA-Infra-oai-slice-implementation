@@ -21,7 +21,23 @@ cd /home/tuannv/INA-Infra-oai-slice-implementation/nws/scripts
 ./bringup.py --build-quick
 ```
 
-Then launch any test scenario in **interactive tiled tmux panes** from `nws/test`:
+Then launch any test scenario in **interactive tiled tmux panes** from `nws/test`.
+There are two ways to apply slice dedicated/min/max:
+
+| Runner | How slice config is applied | gNB / UE restart |
+| :--- | :--- | :--- |
+| **`test.py`** | gNB startup YAML (`bringup.py --scenario`) | Restart when the slice ratio group changes |
+| **`test_with_e2ap.py`** | FlexRIC xApp E2 Slice SM REST | Bring up once at **0/0/100%**; never restart; later tests only `PUT /api/v1/slices` |
+
+```bash
+cd /home/tuannv/INA-Infra-oai-slice-implementation/nws/test
+
+# Startup YAML (restart gNB when ratios change):
+python3 test.py --test 201
+
+# E2AP runtime control (first bringup 0/0/100, then no gNB/UE restart):
+python3 test_with_e2ap.py --test 201 205 301
+```
 
 ```bash
 cd /home/tuannv/INA-Infra-oai-slice-implementation/nws/test
