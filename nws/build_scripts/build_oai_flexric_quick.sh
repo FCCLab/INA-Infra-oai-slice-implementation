@@ -82,31 +82,119 @@ ensure_builder_image() {
     fi
 }
 
-configure_flexric_if_needed() {
-    if [[ -f "${BUILD_DIR}/CMakeCache.txt" ]]; then
+# Ubuntu noble/multiarch: FindCURL needs pkg-config (or explicit -DCURL_*) when cmake
+# regenerates during ninja. Older builder images may lack these packages.
+ensure_builder_curl_deps() {
+    if docker run --rm "${BUILDER_IMAGE}" bash -lc \
+        'command -v pkg-config >/dev/null \
+         && pkg-config --exists libcurl \
+         && (test -f /usr/include/curl/curl.h || ls /usr/include/*/curl/curl.h >/dev/null 2>&1)'; then
         return 0
     fi
-    echo "Configuring FlexRIC cmake in ${BUILD_DIR}..."
+    echo "Patching ${BUILDER_IMAGE} with pkg-config + libcurl4-gnutls-dev (FindCURL)..."
+    local tmpdir
+    tmpdir="$(mktemp -d)"
+    cat >"${tmpdir}/Dockerfile" <<'EOF'
+ARG BASE
+FROM ${BASE}
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends \
+        pkg-config \
+        libcurl4-gnutls-dev && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+EOF
+    docker build --build-arg "BASE=${BUILDER_IMAGE}" -t "${BUILDER_IMAGE}" "${tmpdir}"
+    rm -rf "${tmpdir}"
+}
+
+# Resolve CURL paths inside the container so cmake regenerate cannot fail FindCURL.
+flexric_cmake_configure() {
     mkdir -p "${BUILD_DIR}"
     docker run --rm \
         -v "${FLEXRIC_DIR}:/flexric" \
         -w /flexric/build \
         "${BUILDER_IMAGE}" \
-        bash -lc "cmake -GNinja -DCMAKE_BUILD_TYPE=Release \
-            -DE2AP_VERSION=${E2AP_VERSION} \
-            -DKPM_VERSION=${KPM_VERSION} \
-            -DXAPP_MULTILANGUAGE=ON \
-            -DCMAKE_C_COMPILER=gcc-12 \
-            -DCMAKE_CXX_COMPILER=g++-12 .."
+        bash -lc "
+set -euo pipefail
+# Prefer exact multiarch paths; avoid 'ls a b' (missing path => rc=2 + pipefail silent exit).
+CURL_H=
+for cand in /usr/include/curl/curl.h /usr/include/*/curl/curl.h; do
+  if [[ -f \"\${cand}\" ]]; then CURL_H=\"\${cand}\"; break; fi
+done
+if [[ -z \"\${CURL_H}\" ]]; then
+  echo 'error: curl.h not found in ${BUILDER_IMAGE} (install libcurl4-gnutls-dev)' >&2
+  exit 1
+fi
+# curl.h lives at .../curl/curl.h — FindCURL wants the parent of the curl/ dir.
+CURL_INCLUDE_DIR=\$(dirname \"\$(dirname \"\${CURL_H}\")\")
+CURL_LIBRARY=
+for cand in /usr/lib/*/libcurl.so /usr/lib/libcurl.so; do
+  if [[ -e \"\${cand}\" ]]; then CURL_LIBRARY=\"\${cand}\"; break; fi
+done
+if [[ -z \"\${CURL_LIBRARY}\" ]]; then
+  echo 'error: libcurl.so not found in ${BUILDER_IMAGE}' >&2
+  exit 1
+fi
+echo \"FlexRIC cmake: CURL_INCLUDE_DIR=\${CURL_INCLUDE_DIR} CURL_LIBRARY=\${CURL_LIBRARY}\"
+cmake -GNinja -DCMAKE_BUILD_TYPE=Release \
+  -DE2AP_VERSION=${E2AP_VERSION} \
+  -DKPM_VERSION=${KPM_VERSION} \
+  -DXAPP_MULTILANGUAGE=ON \
+  -DCMAKE_C_COMPILER=gcc-12 \
+  -DCMAKE_CXX_COMPILER=g++-12 \
+  -DCURL_INCLUDE_DIR=\"\${CURL_INCLUDE_DIR}\" \
+  -DCURL_LIBRARY=\"\${CURL_LIBRARY}\" \
+  ..
+"
+}
+
+configure_flexric_if_needed() {
+    local need_cfg=0
+    if [[ ! -f "${BUILD_DIR}/CMakeCache.txt" ]]; then
+        need_cfg=1
+    elif ! grep -qE '^CURL_(LIBRARY|LIBRARY_RELEASE):FILEPATH=.+/libcurl\.so' \
+        "${BUILD_DIR}/CMakeCache.txt" 2>/dev/null; then
+        echo "FlexRIC CMakeCache missing CURL — reconfiguring..."
+        need_cfg=1
+    elif grep -qE '^CURL_(LIBRARY|LIBRARY_RELEASE|INCLUDE_DIR):.*=.*NOTFOUND' \
+        "${BUILD_DIR}/CMakeCache.txt" 2>/dev/null; then
+        echo "FlexRIC CMakeCache has CURL NOTFOUND — reconfiguring..."
+        need_cfg=1
+    fi
+    if [[ "${need_cfg}" -eq 1 ]]; then
+        echo "Configuring FlexRIC cmake in ${BUILD_DIR}..."
+        flexric_cmake_configure
+    fi
 }
 
 run_flexric_ninja() {
     echo "Incremental FlexRIC build: ${FLEXRIC_NINJA_TARGETS[*]}..."
+    local ninja_log
+    ninja_log="$(mktemp)"
+    set +e
     docker run --rm \
         -v "${FLEXRIC_DIR}:/flexric" \
         -w /flexric/build \
         "${BUILDER_IMAGE}" \
-        bash -lc "ninja ${FLEXRIC_NINJA_TARGETS[*]} -j\$(nproc)"
+        bash -lc "ninja ${FLEXRIC_NINJA_TARGETS[*]} -j\$(nproc)" 2>&1 | tee "${ninja_log}"
+    local rc=${PIPESTATUS[0]}
+    set -e
+    if [[ "${rc}" -ne 0 ]]; then
+        if grep -qE 'Could NOT find CURL|FindCURL|CURL_LIBRARY|CURL_INCLUDE_DIR' "${ninja_log}"; then
+            echo "ninja cmake regenerate failed FindCURL — reconfiguring with explicit CURL paths and retrying..."
+            flexric_cmake_configure
+            rm -f "${ninja_log}"
+            docker run --rm \
+                -v "${FLEXRIC_DIR}:/flexric" \
+                -w /flexric/build \
+                "${BUILDER_IMAGE}" \
+                bash -lc "ninja ${FLEXRIC_NINJA_TARGETS[*]} -j\$(nproc)"
+        else
+            rm -f "${ninja_log}"
+            exit "${rc}"
+        fi
+    fi
+    rm -f "${ninja_log}"
 }
 
 stage_flexric_artifacts() {
@@ -175,6 +263,7 @@ stage_flexric_artifacts() {
 }
 
 ensure_builder_image
+ensure_builder_curl_deps
 
 if [[ "${BUILD_LOCAL}" -eq 1 ]]; then
     configure_flexric_if_needed
