@@ -107,11 +107,15 @@ class TmuxManager:
         target_win = f"{self.session}:{win_idx}"
 
         if str(win_idx) not in existing:
-            subprocess.run(["tmux", "new-window", "-d", "-t", target_win, "-n", win_name, "bash"], check=True)
+            subprocess.run(["tmux", "new-window", "-d", "-t", target_win, "-n", win_name, "bash"], capture_output=True)
+            _run_cmd(["tmux", "set-window-option", "-t", target_win, "window-size", "largest"])
+            _run_cmd(["tmux", "resize-window", "-t", target_win, "-x", "220", "-y", "60"])
             for _ in range(num_panes - 1):
-                subprocess.run(["tmux", "split-window", "-d", "-t", target_win, "bash"], check=True)
+                res = subprocess.run(["tmux", "split-window", "-d", "-t", target_win, "bash"], capture_output=True)
+                if res.returncode == 0:
+                    subprocess.run(["tmux", "select-layout", "-t", target_win, "tiled"], capture_output=True)
             if num_panes > 1:
-                subprocess.run(["tmux", "select-layout", "-t", target_win, layout], check=True)
+                subprocess.run(["tmux", "select-layout", "-t", target_win, layout], capture_output=True)
             # Give newly spawned bash subshells 0.3s to finish tty and rc script loading
             time.sleep(0.3)
         else:

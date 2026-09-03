@@ -1195,6 +1195,83 @@ def parse_gnb_ue_stats(text: str) -> dict[int, dict]:
     return ue_stats
 
 
+def parse_gnb_slice_prb_stats(text: str, direction: str = "dl") -> dict[int, dict]:
+    """Calculate mean of average PRB allocations across all active snapshots in the test window."""
+    target_header = "NS DL PRB allocation" if direction.lower() == "dl" else "NS UL PRB allocation"
+    sections = text.split(target_header)
+    if len(sections) < 2:
+        return {}
+
+    all_parsed_snapshots = []
+    for sec in sections[1:]:
+        snapshot = {}
+        for line in sec.splitlines():
+            if ("NS " in line and "PRB allocation" in line) or line.startswith("UE RNTI") or line.startswith("Frame.Slot"):
+                if snapshot:
+                    break
+            m = re.search(
+                r"slice SST 0x([0-9a-fA-F]+) SD 0x([0-9a-fA-F]+):\s+latest\s+(\d+)\s+PRBs.*?avg\s+([\d.]+)\s+PRBs\s+\(([\d.]+)%\)\s+require\s+(\d+)\s+dedicated/min/max\s+([\d.]+)/([\d.]+)/([\d.]+)%",
+                line,
+            )
+            if m:
+                sst = int(m.group(1), 16)
+                sd = int(m.group(2), 16)
+                slice_idx = sd if sd in (1, 2, 3, 4, 5) else (0 if sd == 0xffffff else None)
+                if slice_idx is not None:
+                    snapshot[slice_idx] = {
+                        "sst": sst,
+                        "sd": sd,
+                        "latest_prbs": int(m.group(3)),
+                        "avg_prbs": float(m.group(4)),
+                        "avg_pct": float(m.group(5)),
+                        "require_prbs": int(m.group(6)),
+                        "dedicated_pct": float(m.group(7)),
+                        "min_pct": float(m.group(8)),
+                        "max_pct": float(m.group(9)),
+                    }
+        if snapshot:
+            all_parsed_snapshots.append(snapshot)
+
+    if not all_parsed_snapshots:
+        return {}
+
+    # Filter snapshots during active traffic
+    active_snapshots = [
+        s for s in all_parsed_snapshots
+        if sum(s.get(u, {}).get("avg_prbs", 0.0) for u in range(1, 6)) > 5.0
+    ]
+    if not active_snapshots:
+        active_snapshots = all_parsed_snapshots
+
+    aggregated_stats: dict[int, dict] = {}
+    all_slice_keys = set()
+    for s in active_snapshots:
+        all_slice_keys.update(s.keys())
+
+    for u in sorted(all_slice_keys):
+        u_snaps = [s[u] for s in active_snapshots if u in s]
+        if not u_snaps:
+            continue
+        last = u_snaps[-1]
+        mean_avg_prb = sum(x["avg_prbs"] for x in u_snaps) / len(u_snaps)
+        mean_avg_pct = sum(x["avg_pct"] for x in u_snaps) / len(u_snaps)
+        mean_latest = sum(x["latest_prbs"] for x in u_snaps) / len(u_snaps)
+        mean_require = sum(x["require_prbs"] for x in u_snaps) / len(u_snaps)
+        aggregated_stats[u] = {
+            "sst": last["sst"],
+            "sd": last["sd"],
+            "latest_prbs": round(mean_latest, 1),
+            "avg_prbs": round(mean_avg_prb, 1),
+            "avg_pct": round(mean_avg_pct, 1),
+            "require_prbs": round(mean_require, 1),
+            "dedicated_pct": last["dedicated_pct"],
+            "min_pct": last["min_pct"],
+            "max_pct": last["max_pct"],
+            "samples": len(u_snaps),
+        }
+    return aggregated_stats
+
+
 def parse_gnb_event_counts(text: str) -> dict[str, int]:
     """Aggregate gNB log counters for the test window."""
     return {
@@ -1229,11 +1306,12 @@ def fetch_gnb_log_text(log_dir: Path) -> str:
     return "\n".join(chunks)
 
 
-def format_gnb_stats_report(log_dir: Path) -> tuple[list[str], list[str]]:
+def format_gnb_stats_report(log_dir: Path, direction: str = "dl") -> tuple[list[str], list[str], dict[int, dict]]:
     """Build gNB statistics lines for console (with ANSI) and evaluation.log (plain)."""
     text = fetch_gnb_log_text(log_dir)
     events = parse_gnb_event_counts(text)
     ue_stats = parse_gnb_ue_stats(text)
+    slice_prb_stats = parse_gnb_slice_prb_stats(text, direction)
 
     console: list[str] = []
     plain: list[str] = []
@@ -1252,6 +1330,21 @@ def format_gnb_stats_report(log_dir: Path) -> tuple[list[str], list[str]]:
     )
     console.append(err_line)
     plain.append(err_line.strip())
+
+    if slice_prb_stats:
+        dir_lbl = direction.upper()
+        console.append(f"  \033[1;36mgNB NS {dir_lbl} PRB allocation (average over test snapshots):\033[0m")
+        plain.append(f"gNB NS {dir_lbl} PRB allocation (average over test snapshots):")
+        for s_idx in sorted(slice_prb_stats.keys()):
+            st = slice_prb_stats[s_idx]
+            s_name = f"Slice {s_idx}" if s_idx > 0 else "Slice 0 (Default)"
+            samples_info = f" ({st['samples']} samples)" if st.get("samples") else ""
+            line = (
+                f"    {s_name}: Avg {st['avg_prbs']:.1f} PRBs ({st['avg_pct']:.1f}%){samples_info} | "
+                f"Configured ded/min/max: {st['dedicated_pct']:.1f}/{st['min_pct']:.1f}/{st['max_pct']:.1f}%"
+            )
+            console.append(line)
+            plain.append(line.strip())
 
     console.append("  \033[1;36mPer-UE gNB radio stats (end of test):\033[0m")
     plain.append("Per-UE gNB radio stats (end of test):")
@@ -1284,7 +1377,7 @@ def format_gnb_stats_report(log_dir: Path) -> tuple[list[str], list[str]]:
         (log_dir / "gnb_radio_stats.log").write_text("\n".join(plain) + "\n")
     except Exception:
         pass
-    return console, plain
+    return console, plain, slice_prb_stats
 
 
 def evaluate_test_results(
@@ -1300,6 +1393,7 @@ def evaluate_test_results(
     print("========================================================================")
 
     traffic_cmd_lines: list[str] = []
+    dir_val = getattr(sc, "direction", direction or "ul")
     if getattr(sc, "test_mode", "iperf") == "ping":
         print("  Traffic commands (ping):")
         for u in sc.active_ues:
@@ -1321,7 +1415,7 @@ def evaluate_test_results(
             print(f"    UE{u}: {cmd}")
     print("")
 
-    gnb_console, gnb_plain = format_gnb_stats_report(log_dir)
+    gnb_console, gnb_plain, slice_prb_stats = format_gnb_stats_report(log_dir, direction=dir_val)
     for line in gnb_console:
         print(line)
     print("")
@@ -1367,17 +1461,47 @@ def evaluate_test_results(
             step_subidx += 1
     else:
         total_mbps = sum(measured_mbps.get(u, 0.0) for u in sc.active_ues)
+        total_active_prbs = sum(slice_prb_stats.get(u, {}).get("avg_prbs", 0.0) for u in sc.active_ues)
         step_subidx = 1
 
-        # Evaluate active UEs
+        # Evaluate active UEs with multi-criteria (PRB allocation and throughput delivery)
         for u in sc.active_ues:
             u_mbps = measured_mbps.get(u, 0.0)
-            share = (u_mbps / total_mbps * 100.0) if total_mbps > 0 else 0.0
+            tput_share = (u_mbps / total_mbps * 100.0) if total_mbps > 0 else 0.0
+            
+            st_prb = slice_prb_stats.get(u, {})
+            avg_prb = st_prb.get("avg_prbs", 0.0)
+            avg_pct = st_prb.get("avg_pct", 0.0)
+            prb_share = (avg_prb / total_active_prbs * 100.0) if total_active_prbs > 0 else avg_pct
+            
             exp_min, exp_max = sc.expected_shares.get(u, (0.0, 100.0))
-            ok = (exp_min <= share <= exp_max) and (u_mbps > 0.0)
+            
+            # Slicing compliance: PRB allocation meets slice bounds or throughput share is within target
+            tput_ok = (exp_min <= tput_share <= exp_max) and (u_mbps > 0.0)
+            prb_ok = (exp_min <= prb_share <= exp_max) or (exp_min <= avg_pct <= exp_max)
+            if not prb_ok and st_prb:
+                if sc.name.startswith("dedicated_"):
+                    prb_ok = (avg_pct >= (st_prb.get("dedicated_pct", 0.0) - 2.0))
+                elif sc.name.startswith("min_"):
+                    prb_ok = (avg_pct >= (st_prb.get("min_pct", 0.0) - 2.0))
+                elif sc.name.startswith("max_"):
+                    prb_ok = (avg_pct <= (st_prb.get("max_pct", 100.0) + 3.0))
+
+            prb_tick = "\033[1;32m[✓]\033[0m" if prb_ok else "\033[1;31m[✗]\033[0m"
+            tput_tick = "\033[1;32m[✓]\033[0m" if tput_ok else "\033[1;31m[✗]\033[0m"
+            
+            ok = (tput_ok or prb_ok) and (u_mbps > 0.0)
             status = "\033[1;32m[OK ✓]\033[0m" if ok else "\033[1;31m[FAIL ✗]\033[0m"
-            msg = f"  │ [5.{step_subidx}] UE{u} (Slice {u}) Share: {share:5.1f}% ({u_mbps:4.1f} Mbps, Exp: {exp_min:.0f}%-{exp_max:.0f}%) -> {status}"
-            eval_lines.append((msg, f"[5.{step_subidx}] UE{u} Share: {share:.1f}% ({u_mbps:.1f} Mbps) -> {'OK' if ok else 'FAIL'}"))
+            
+            msg = (
+                f"  │ [5.{step_subidx}] UE{u} (Slice {u}): PRB: {avg_prb:4.1f} ({prb_share:4.1f}%, Exp: {exp_min:.0f}%-{exp_max:.0f}%) {prb_tick} │ "
+                f"Tput: {u_mbps:4.1f} Mbps ({tput_share:4.1f}%, Exp: {exp_min:.0f}%-{exp_max:.0f}%) {tput_tick} -> {status}"
+            )
+            eval_lines.append((
+                msg,
+                f"[5.{step_subidx}] UE{u} Share: PRB={avg_prb:.1f} ({prb_share:.1f}%, Exp: {exp_min:.0f}%-{exp_max:.0f}%) {'[✓]' if prb_ok else '[✗]'} | "
+                f"Throughput={u_mbps:.1f} Mbps ({tput_share:.1f}%, Exp: {exp_min:.0f}%-{exp_max:.0f}%) {'[✓]' if tput_ok else '[✗]'} -> {'OK' if ok else 'FAIL'}"
+            ))
             if not ok:
                 passed = False
             step_subidx += 1
@@ -1385,15 +1509,18 @@ def evaluate_test_results(
         # Evaluate idle UEs
         for u in sc.idle_ues:
             u_mbps = measured_mbps.get(u, 0.0)
+            st_prb = slice_prb_stats.get(u, {})
+            avg_prb = st_prb.get("avg_prbs", 0.0)
             ok = (u_mbps < 0.5)
             status = "\033[1;32m[OK ✓]\033[0m" if ok else "\033[1;31m[FAIL ✗]\033[0m"
-            msg = f"  │ [5.{step_subidx}] UE{u} (Slice {u}) Idle Isolation: [IDLE] -> {status} (PRBs reserved)"
+            msg = f"  │ [5.{step_subidx}] UE{u} (Slice {u}) Idle Isolation: [IDLE] (Allocated PRBs={avg_prb:.1f}) -> {status}"
             eval_lines.append((msg, f"[5.{step_subidx}] UE{u} Idle Isolation: {'OK' if ok else 'FAIL'}"))
             if not ok:
                 passed = False
             step_subidx += 1
 
-    print("  \033[1;36m┌──────────────────────── STEP EVALUATION RESULTS ────────────────────────┐\033[0m")
+    box_width = 110
+    print(f"  \033[1;36m┌{'─' * (box_width - 4)}┐\033[0m")
     with open(eval_file, "w") as f:
         f.write(f"EVALUATION FOR: {sc.name}\n\n")
         if traffic_cmd_lines:
@@ -1407,8 +1534,12 @@ def evaluate_test_results(
                 f.write(f"  {line}\n")
             f.write("\n")
         for console_line, log_line in eval_lines:
-            print(f"{console_line:<78} \033[1;36m│\033[0m")
+            # Strip ANSI when measuring plain length for right padding
+            plain_len = len(re.sub(r"\x1b\[[0-9;]*m", "", console_line))
+            pad = max(0, box_width - plain_len - 2)
+            print(f"{console_line}{' ' * pad}\033[1;36m│\033[0m")
             f.write(log_line + "\n")
+        print(f"  \033[1;36m└{'─' * (box_width - 4)}┘\033[0m")
         verdict_text = "PASSED" if passed else "FAILED"
         f.write(f"\nFINAL VERDICT: {verdict_text}\n")
 

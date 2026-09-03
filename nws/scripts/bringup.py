@@ -972,6 +972,27 @@ SCENARIO_SLICE_RULES: dict[str, list[dict[str, object]]] = {
         {"slice_id": 4, "sst": 1, "sd": "0x000004", "ded": 0.0, "min": 0.0, "max": 50.0},
         {"slice_id": 5, "sst": 1, "sd": "0x000005", "ded": 0.0, "min": 0.0, "max": 50.0},
     ],
+    "max_asym_full": [
+        {"slice_id": 1, "sst": 1, "sd": "0x000001", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 2, "sst": 1, "sd": "0x000002", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 3, "sst": 1, "sd": "0x000003", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 4, "sst": 1, "sd": "0x000004", "ded": 0.0, "min": 0.0, "max": 50.0},
+        {"slice_id": 5, "sst": 1, "sd": "0x000005", "ded": 0.0, "min": 0.0, "max": 50.0},
+    ],
+    "max_sym_full": [
+        {"slice_id": 1, "sst": 1, "sd": "0x000001", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 2, "sst": 1, "sd": "0x000002", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 3, "sst": 1, "sd": "0x000003", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 4, "sst": 1, "sd": "0x000004", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 5, "sst": 1, "sd": "0x000005", "ded": 0.0, "min": 0.0, "max": 100.0},
+    ],
+    "max_sym_idle": [
+        {"slice_id": 1, "sst": 1, "sd": "0x000001", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 2, "sst": 1, "sd": "0x000002", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 3, "sst": 1, "sd": "0x000003", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 4, "sst": 1, "sd": "0x000004", "ded": 0.0, "min": 0.0, "max": 100.0},
+        {"slice_id": 5, "sst": 1, "sd": "0x000005", "ded": 0.0, "min": 0.0, "max": 100.0},
+    ],
 }
 
 
@@ -1027,6 +1048,10 @@ def patch_gnb_scheduler(src: Path, dst: Path, sch: str, scenario: Optional[str] 
             base_key = re.sub(r'_(dl|ul)_(udp|tcp)$', '', scenario)
             if base_key in SCENARIO_SLICE_RULES:
                 rules = SCENARIO_SLICE_RULES[base_key]
+            else:
+                base_key2 = re.sub(r'_(idle|full)$', '', base_key)
+                if base_key2 in SCENARIO_SLICE_RULES:
+                    rules = SCENARIO_SLICE_RULES[base_key2]
 
     if rules is not None:
         slice_lines = ["Slices:"]
