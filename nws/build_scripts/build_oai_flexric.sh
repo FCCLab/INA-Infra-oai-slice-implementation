@@ -15,6 +15,8 @@ else
     ARCH_TAG="$ARCH"
 fi
 
+sudo rm -rf ${OAI_DIR}/openair2/E2AP/flexric/build
+
 echo "Building oai-flexric:latest..."
 cd "${OAI_DIR}"
 docker build \
