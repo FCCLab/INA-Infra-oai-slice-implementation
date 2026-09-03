@@ -836,11 +836,15 @@ def apply_xapp_policy(rules: list[SliceRule], log_dir: Path):
 
 
 def setup_iperf_servers(direction: str):
-    """Ensure persistent self-healing iperf3 servers are running on UPF Core container with per-port logging."""
-    run_cmd(["docker", "exec", CORE_CONTAINER, "pkill", "-9", "-f", "iperf3|ping|iperf_loop"])
+    """Ensure clean iperf3 servers are running on UPF Core container with per-port logging."""
+    for proc in ("iperf3", "iperf", "ping", "tail"):
+        run_cmd(["docker", "exec", CORE_CONTAINER, "killall", "-9", proc])
+        run_cmd(["docker", "exec", CORE_CONTAINER, "pkill", "-9", "-f", proc])
     for ue in range(1, 6):
-        run_cmd(["docker", "exec", f"nws-oai-nr-ue{ue}", "pkill", "-9", "-f", "iperf3|ping"])
-    time.sleep(0.3)
+        run_cmd(["docker", "exec", f"nws-oai-nr-ue{ue}", "killall", "-9", "iperf3", "ping"])
+        run_cmd(["docker", "exec", f"nws-oai-nr-ue{ue}", "pkill", "-9", "-f", "iperf3"])
+        run_cmd(["docker", "exec", f"nws-oai-nr-ue{ue}", "pkill", "-9", "-f", "ping"])
+    time.sleep(0.4)
 
     for u in range(1, 6):
         port = 5200 + u
