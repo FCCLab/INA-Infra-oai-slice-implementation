@@ -204,21 +204,6 @@ def warn_ric_stack_conflicts(ric_container: str = "nws-nearRT-RIC") -> None:
         print(f"WARN: {msg}", file=sys.stderr)
 
 
-    out: list[str] = []
-    i = 0
-    while i < len(argv):
-        a = argv[i]
-        if a == "--api-port":
-            i += 2
-            continue
-        if a.startswith("--api-port="):
-            i += 1
-            continue
-        out.append(a)
-        i += 1
-    return out
-
-
 def parse_wait_e2_from_argv(argv: list[str], default: float = 60.0) -> float:
     i = 0
     while i < len(argv):

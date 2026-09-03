@@ -5,9 +5,11 @@ Shared 3GPP Network Slicing live rfsim test library (PR #451).
 Two runners import this module:
 
   test.py            — apply slice dedicated/min/max via gNB startup YAML
-                       (`bringup.py --scenario`). RIC/xApp are not used.
-  test_with_e2ap.py  — bring up NSBOTH once, then change slice policy at
-                       runtime via FlexRIC xApp E2 Slice SM REST API.
+                       (`bringup.py --scenario`). Restart gNB/UEs at the start
+                       of a run, then again only when the YAML slice group changes.
+  test_with_e2ap.py  — restart gNB/UEs once per run at NSBOTH 0/0/100%; later
+                       test cases only change slice policy via FlexRIC xApp E2.
+                       Traffic starts after mac stats show the new dedicated/min/max.
 """
 
 from __future__ import annotations
@@ -660,17 +662,28 @@ def get_scenario_base_group(name: str) -> str:
 E2AP_BASELINE_SCENARIO = "as_no_slice"  # first bringup: dedicated=0, min=0, max=100 on all slices
 
 
+def is_pf_scenario_name(name: Optional[str]) -> bool:
+    base = get_scenario_base_group(name or "")
+    return base.startswith("pf") or base in ("pf_only", "pf")
+
+
+def is_pf_scenario(sc: TestScenario) -> bool:
+    return is_pf_scenario_name(sc.name) or not sc.rules and str(sc.name).startswith("pf")
+
+
 def prepare_state_key(slice_config_mode: str, scenario_name: Optional[str]) -> str:
-    """State-file key: startup restarts when YAML ratios change; E2AP never restarts gNB/UE."""
+    """State-file key: E2AP uses pf vs nsboth; startup uses YAML slice group."""
     if slice_config_mode == SLICE_CONFIG_E2AP:
-        return "e2ap:nsboth"
+        return "e2ap:pf" if is_pf_scenario_name(scenario_name) else "e2ap:nsboth"
     base_group = get_scenario_base_group(scenario_name or "as_no_slice")
     return f"startup:{base_group}"
 
 
 def e2ap_rules_for(sc: TestScenario) -> list[SliceRule]:
-    """E2 SET payload: scenario rules, or 0/0/100% when the scenario has none (PF)."""
-    return list(sc.rules) if sc.rules else list(_AS_NO_SLICE_RULES)
+    """E2 SET payload. PF scenarios have no slice policy (empty)."""
+    if is_pf_scenario(sc) or not sc.rules:
+        return []
+    return list(sc.rules)
 
 
 def wait_xapp_api(timeout_s: float = 45.0) -> bool:
@@ -706,6 +719,12 @@ def ensure_xapp() -> bool:
         return False
     if not wait_xapp_api(timeout_s=60.0):
         print("\033[1;31m[FAIL] FlexRIC xApp REST API did not become ready on :18080\033[0m")
+        logs = run_cmd(["docker", "logs", "--tail", "40", XAPP_CONTAINER])
+        text = (logs.stdout or logs.stderr or "").strip()
+        if text:
+            print("  -> nws-xapp-slice-monitor logs:")
+            for line in text.splitlines()[-20:]:
+                print(f"     {line}")
         return False
     print("  -> FlexRIC xApp REST API is ready.")
     return True
@@ -723,14 +742,15 @@ def auto_prepare_testbed(
     force_restart: bool = False,
     slice_config_mode: str = SLICE_CONFIG_STARTUP,
 ) -> bool:
-    """Check 5GC (reused if active), reuse RAN and UEs if same slice baseline is running and healthy."""
+    """Keep 5GC if healthy. Restart gNB/UEs when force_restart or slice baseline changed."""
     mode_label = SLICE_CONFIG_LABELS.get(slice_config_mode, slice_config_mode)
     print("\n========================================================================")
     print("           AUTO-PREPARATION & 5G TESTBED HEALTH CHECK")
     print(f"           Slice config method: {mode_label}")
     print("========================================================================")
 
-    total_steps = 5 if slice_config_mode == SLICE_CONFIG_E2AP else 4
+    is_pf = is_pf_scenario_name(scenario_name)
+    total_steps = 5 if (slice_config_mode == SLICE_CONFIG_E2AP and not is_pf) else 4
 
     # 1. Check/Bringup 5GC (Reused if already running)
     print_step(1, total_steps, "Checking Open5GS Core (nws-5gc)", done=False)
@@ -748,12 +768,6 @@ def auto_prepare_testbed(
     base_group = get_scenario_base_group(scenario_name or "as_no_slice")
     state_key = prepare_state_key(slice_config_mode, scenario_name)
     last_key = STATE_FILE.read_text().strip() if STATE_FILE.is_file() else ""
-    # E2AP keeps NSBOTH for every scenario (including PF-named cases): 0/0/100 at
-    # bringup, then slice ratios change only via xApp. True sch=PF needs test.py.
-    is_pf = (
-        slice_config_mode != SLICE_CONFIG_E2AP
-        and (base_group.startswith("pf") or base_group in ("pf_only", "pf"))
-    )
 
     ran_healthy = is_container_running(GNB_CONTAINER)
     all_ues_healthy = all(is_container_running(f"nws-oai-nr-ue{u}") for u in range(1, num_ues + 1))
@@ -793,7 +807,7 @@ def auto_prepare_testbed(
             done=True,
             msg=f"PDU Sessions Active ({', '.join(ue_ips.values())})",
         )
-        if slice_config_mode == SLICE_CONFIG_E2AP:
+        if slice_config_mode == SLICE_CONFIG_E2AP and not is_pf:
             print_step(4, total_steps, "FlexRIC xApp E2AP REST", done=False)
             if not ensure_xapp():
                 print_step(4, total_steps, "FlexRIC xApp E2AP REST", done=True, msg="FAILED")
@@ -804,12 +818,17 @@ def auto_prepare_testbed(
                 total_steps,
                 "5G End-to-End Testbed Readiness",
                 done=True,
-                msg="gNB/UEs kept running; slice change via E2AP only",
+                msg="gNB/UEs kept running; slice change via xApp E2AP (no restart)",
             )
         else:
             if slice_config_mode == SLICE_CONFIG_STARTUP:
                 stop_xapp()
-            print_step(4, total_steps, "5G End-to-End Testbed Readiness", done=True, msg="Ready for Slicing Tests (No Restart Needed)")
+            ready_msg = (
+                "Ready (sch=PF reused — no NS slice log expected)"
+                if is_pf
+                else "Ready for Slicing Tests (No Restart Needed)"
+            )
+            print_step(4, total_steps, "5G End-to-End Testbed Readiness", done=True, msg=ready_msg)
         print("========================================================================\n")
         return True
 
@@ -819,8 +838,10 @@ def auto_prepare_testbed(
 
     # 2. Fresh RAN & UE Bringup via bringup.py if config changed or containers down
     sch_type = "PF" if is_pf else "NSBOTH"
-    if slice_config_mode == SLICE_CONFIG_E2AP:
-        step2_title = "Bringup NSBOTH baseline 0/0/100% (once)"
+    if slice_config_mode == SLICE_CONFIG_E2AP and is_pf:
+        step2_title = "Restart gNB/UEs (sch=PF, no NS slice layer)"
+    elif slice_config_mode == SLICE_CONFIG_E2AP:
+        step2_title = "Restart gNB/UEs (NSBOTH baseline 0/0/100%)"
     elif is_pf:
         step2_title = "Configuring RAN Baseline (sch=PF)"
     else:
@@ -836,8 +857,8 @@ def auto_prepare_testbed(
         bringup_cmd.append("--no-ric")
         if scenario_name and not is_pf:
             bringup_cmd.extend(["--scenario", scenario_name])
-    else:
-        # First (and only) E2AP bringup: 0/0/100% on all slices; RIC stays up for xApp.
+    elif not is_pf:
+        # E2AP NSBOTH: 0/0/100% on all slices; RIC stays up for xApp.
         bringup_cmd.extend(["--scenario", E2AP_BASELINE_SCENARIO])
     ret, _ = run_cmd_streaming_box(bringup_cmd, f"OAI gNB & UE Bringup ({state_key})")
     if ret != 0:
@@ -884,7 +905,7 @@ def auto_prepare_testbed(
         msg=f"PDU Sessions Active ({', '.join(ue_ips.values())})",
     )
 
-    if slice_config_mode == SLICE_CONFIG_E2AP:
+    if slice_config_mode == SLICE_CONFIG_E2AP and not is_pf:
         print_step(4, total_steps, "FlexRIC xApp E2AP REST", done=False)
         if not ensure_xapp():
             print_step(4, total_steps, "FlexRIC xApp E2AP REST", done=True, msg="FAILED")
@@ -895,8 +916,10 @@ def auto_prepare_testbed(
             total_steps,
             "5G End-to-End Testbed Readiness",
             done=True,
-            msg="Baseline 0/0/100%; later tests change slice via E2AP only (no gNB/UE restart)",
+            msg="Baseline 0/0/100%; later NS cases in this run change slice via xApp (no gNB/UE restart)",
         )
+    elif is_pf:
+        print_step(4, total_steps, "5G End-to-End Testbed Readiness", done=True, msg="Ready (sch=PF — no NS slice log expected)")
     else:
         print_step(4, total_steps, "5G End-to-End Testbed Readiness", done=True, msg="Ready (slice via gNB startup YAML)")
     print("========================================================================\n")
@@ -1030,17 +1053,208 @@ def get_mac_stats() -> str:
     """Fetch gNB mac stats from container or telnet."""
     for port in (19090, 9090):
         try:
-            tn = telnetlib.Telnet("127.0.0.1", port, timeout=1.0)
-            tn.read_until(b"softmodem_gnb>", timeout=1.0)
+            tn = telnetlib.Telnet("127.0.0.1", port, timeout=2.0)
+            tn.read_until(b"softmodem_gnb>", timeout=2.0)
             tn.write(b"mac stats\n")
-            output = tn.read_until(b"softmodem_gnb>", timeout=1.0).decode("utf-8", errors="ignore")
+            output = tn.read_until(b"softmodem_gnb>", timeout=3.0).decode("utf-8", errors="ignore")
             tn.close()
             if output:
                 return output
         except Exception:
             continue
-    res = run_cmd(["docker", "logs", "--tail", "40", GNB_CONTAINER])
+    res = run_cmd(["docker", "logs", "--tail", "80", GNB_CONTAINER])
     return res.stdout
+
+
+_NS_SLICE_LINE_RE = re.compile(
+    r"slice SST 0x([0-9a-fA-F]+) SD 0x([0-9a-fA-F]+):\s+"
+    r"latest\s+(\d+)\s+PRBs.*?avg\s+([\d.]+)\s+PRBs\s+\(([\d.]+)%\)\s+"
+    r"require\s+(\d+)\s+dedicated/min/max\s+([\d.]+)/([\d.]+)/([\d.]+)%",
+    re.IGNORECASE,
+)
+
+
+def _sd_int(sd: str | int) -> int:
+    if isinstance(sd, int):
+        return sd
+    return int(str(sd).strip().lower().replace("0x", ""), 16)
+
+
+def expected_ns_policy(
+    rules: list[SliceRule],
+) -> dict[tuple[str, int], tuple[float, float, float]]:
+    """Map (direction, sd) -> (dedicated, min, max). Skips default SD 0xffffff."""
+    expected: dict[tuple[str, int], tuple[float, float, float]] = {}
+    for r in rules:
+        sd = _sd_int(r.sd)
+        if sd == 0xFFFFFF:
+            continue
+        dirs = ["dl", "ul"] if r.direction == "both" else [r.direction.lower()]
+        for d in dirs:
+            expected[(d, sd)] = (float(r.dedicated), float(r.min_ratio), float(r.max_ratio))
+    return expected
+
+
+def extract_ns_prb_blocks(text: str) -> str:
+    """Keep the latest NS UL / NS DL PRB allocation stanzas from mac stats."""
+    chunks: list[str] = []
+    pattern = re.compile(
+        r"(NS (?:UL|DL) PRB allocation[^\n]*\n(?:[ \t]*slice SST[^\n]*\n)+)",
+        re.IGNORECASE,
+    )
+    last_ul = last_dl = ""
+    for m in pattern.finditer(text):
+        block = m.group(1).rstrip()
+        if "NS UL PRB" in block.upper() or block.lower().startswith("ns ul"):
+            last_ul = block
+        else:
+            last_dl = block
+    if last_ul:
+        chunks.append(last_ul)
+    if last_dl:
+        chunks.append(last_dl)
+    return "\n".join(chunks)
+
+
+def parse_ns_prb_policy(text: str) -> dict[tuple[str, int], tuple[float, float, float]]:
+    """Parse dedicated/min/max % per (ul|dl, sd) from mac stats NS PRB allocation."""
+    found: dict[tuple[str, int], tuple[float, float, float]] = {}
+    for direction, header in (("ul", "NS UL PRB allocation"), ("dl", "NS DL PRB allocation")):
+        parts = re.split(re.escape(header), text, flags=re.IGNORECASE)
+        if len(parts) < 2:
+            continue
+        block = parts[-1]
+        nxt = re.search(r"\nNS (?:UL|DL) PRB allocation", block, flags=re.IGNORECASE)
+        if nxt:
+            block = block[: nxt.start()]
+        for m in _NS_SLICE_LINE_RE.finditer(block):
+            sd = int(m.group(2), 16)
+            if sd == 0xFFFFFF:
+                continue
+            found[(direction, sd)] = (float(m.group(7)), float(m.group(8)), float(m.group(9)))
+    return found
+
+
+def _policy_close(
+    got: tuple[float, float, float], want: tuple[float, float, float], tol: float = 0.51
+) -> bool:
+    return all(abs(a - b) <= tol for a, b in zip(got, want))
+
+
+def wait_ns_prb_policy_applied(
+    rules: list[SliceRule],
+    log_dir: Path,
+    timeout_s: float = 45.0,
+) -> bool:
+    """Poll gNB mac stats until NS UL/DL dedicated/min/max match the applied xApp policy."""
+    expected = expected_ns_policy(rules)
+    if not expected:
+        return True
+
+    print("  -> Waiting for gNB NS UL/DL PRB allocation to show the new dedicated/min/max...")
+    want_lines = []
+    for (d, sd), (ded, mn, mx) in sorted(expected.items()):
+        want_lines.append(f"    {d.upper()} SD 0x{sd:06x}: dedicated/min/max {ded:g}/{mn:g}/{mx:g}%")
+    print("\n".join(want_lines))
+
+    deadline = time.time() + timeout_s
+    last_blocks = ""
+    last_found: dict[tuple[str, int], tuple[float, float, float]] = {}
+    while time.time() < deadline:
+        stats = get_mac_stats()
+        last_blocks = extract_ns_prb_blocks(stats)
+        last_found = parse_ns_prb_policy(stats)
+        missing = []
+        for key, want in expected.items():
+            got = last_found.get(key)
+            if got is None or not _policy_close(got, want):
+                d, sd = key
+                got_s = f"{got[0]:g}/{got[1]:g}/{got[2]:g}%" if got else "(missing)"
+                missing.append(f"{d.upper()} SD 0x{sd:06x}: got {got_s}, want {want[0]:g}/{want[1]:g}/{want[2]:g}%")
+        if not missing:
+            print("  -> NS PRB allocation matches applied slice config. Starting traffic.")
+            if last_blocks:
+                print(last_blocks)
+            try:
+                (log_dir / "ns_prb_policy_verified.log").write_text(
+                    last_blocks + "\n" if last_blocks else "matched (no stanza captured)\n"
+                )
+            except Exception:
+                pass
+            return True
+        time.sleep(1.0)
+
+    print("\033[1;31m  -> [FAIL] NS PRB dedicated/min/max did not match after E2 SET:\033[0m")
+    for (d, sd), want in sorted(expected.items()):
+        got = last_found.get((d, sd))
+        got_s = f"{got[0]:g}/{got[1]:g}/{got[2]:g}%" if got else "(missing)"
+        print(f"     {d.upper()} SD 0x{sd:06x}: got {got_s}, want {want[0]:g}/{want[1]:g}/{want[2]:g}%")
+    if last_blocks:
+        print(last_blocks)
+    try:
+        (log_dir / "ns_prb_policy_verified.log").write_text(
+            "MISMATCH\n" + (last_blocks or "") + "\n"
+        )
+    except Exception:
+        pass
+    return False
+
+
+def mac_stats_has_ns_slice_log(text: str) -> bool:
+    """True if mac stats / gNB log includes NS slice PRB allocation (SCHE_NS)."""
+    if not text:
+        return False
+    if re.search(r"NS (?:UL|DL) PRB allocation", text, flags=re.IGNORECASE):
+        return True
+    if re.search(
+        r"slice SST\s+0x[0-9a-fA-F]+\s+SD\s+0x[0-9a-fA-F]+:.*dedicated/min/max",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        return True
+    return False
+
+
+def wait_no_ns_slice_log(log_dir: Path, timeout_s: float = 12.0) -> bool:
+    """For sch=PF: confirm mac stats has no NS UL/DL slice PRB allocation log."""
+    print("  -> Checking mac stats: PF scheduler must not print NS slice PRB allocation...")
+    deadline = time.time() + timeout_s
+    last_stats = ""
+    clean_reads = 0
+    while time.time() < deadline:
+        last_stats = get_mac_stats()
+        if mac_stats_has_ns_slice_log(last_stats):
+            blocks = extract_ns_prb_blocks(last_stats)
+            print("\033[1;31m  -> [FAIL] NS slice PRB log present (expected none for PF / test 000):\033[0m")
+            if blocks:
+                print(blocks)
+            try:
+                (log_dir / "ns_prb_policy_verified.log").write_text(
+                    "UNEXPECTED NS SLICE LOG (PF)\n" + (blocks or last_stats[-2000:]) + "\n"
+                )
+            except Exception:
+                pass
+            return False
+        if last_stats.strip():
+            clean_reads += 1
+            if clean_reads >= 2:
+                print("  -> No NS UL/DL slice PRB log (sch=PF). Starting traffic.")
+                try:
+                    (log_dir / "ns_prb_policy_verified.log").write_text(
+                        "OK: no NS UL/DL PRB allocation log (PF scheduler)\n"
+                    )
+                except Exception:
+                    pass
+                return True
+        time.sleep(1.0)
+    print("  -> No NS slice PRB log observed. Starting traffic.")
+    try:
+        (log_dir / "ns_prb_policy_verified.log").write_text(
+            "OK: no NS UL/DL PRB allocation log (PF scheduler)\n"
+        )
+    except Exception:
+        pass
+    return True
 
 
 def extract_latest_sum_mbps(text: str, streams: int = 5) -> Optional[float]:
@@ -1695,6 +1909,29 @@ def evaluate_test_results(
                 passed = False
             step_subidx += 1
 
+    if is_pf_scenario(sc):
+        gnb_text = fetch_gnb_log_text(log_dir)
+        mac_log = log_dir / "mac_stats.log"
+        mac_file_text = ""
+        if mac_log.is_file():
+            try:
+                mac_file_text = mac_log.read_text(errors="ignore")
+            except Exception:
+                pass
+        has_slice = mac_stats_has_ns_slice_log(gnb_text) or mac_stats_has_ns_slice_log(mac_file_text)
+        ok = not has_slice
+        status = "\033[1;32m[OK ✓]\033[0m" if ok else "\033[1;31m[FAIL ✗]\033[0m"
+        msg = (
+            f"  │ [5.{step_subidx}] PF scheduler: NS UL/DL slice PRB log must be absent "
+            f"(no 'NS PRB allocation' / dedicated/min/max) -> {status}"
+        )
+        eval_lines.append((
+            msg,
+            f"[5.{step_subidx}] PF no NS slice log: {'OK (absent)' if ok else 'FAIL (NS slice log present)'}",
+        ))
+        if not ok:
+            passed = False
+
     box_width = 110
     print(f"  \033[1;36m┌{'─' * (box_width - 4)}┐\033[0m")
     with open(eval_file, "w") as f:
@@ -1782,17 +2019,40 @@ def launch_tmux_session(
     print("------------------------------------------------------------------------")
 
     if slice_config_mode == SLICE_CONFIG_E2AP:
-        rules = e2ap_rules_for(sc)
-        if not apply_xapp_policy(rules, log_dir, required=True):
-            eval_file = log_dir / "evaluation.log"
-            eval_file.write_text(
-                "========================================================================\n"
-                f"  TEST {sc.name}\n"
-                "  RESULT: FAILED [✗]\n"
-                "  REASON: Failed to apply slice policy via FlexRIC xApp E2AP REST.\n"
-                "========================================================================\n"
-            )
-            return False, eval_file
+        if is_pf_scenario(sc):
+            print("  -> PF test: no xApp slice SET. Expect no NS UL/DL slice PRB log.")
+            if not wait_no_ns_slice_log(log_dir):
+                eval_file = log_dir / "evaluation.log"
+                eval_file.write_text(
+                    "========================================================================\n"
+                    f"  TEST {sc.name}\n"
+                    "  RESULT: FAILED [✗]\n"
+                    "  REASON: PF scheduler (000) must not emit NS UL/DL slice PRB allocation logs.\n"
+                    "========================================================================\n"
+                )
+                return False, eval_file
+        else:
+            rules = e2ap_rules_for(sc)
+            if not apply_xapp_policy(rules, log_dir, required=True):
+                eval_file = log_dir / "evaluation.log"
+                eval_file.write_text(
+                    "========================================================================\n"
+                    f"  TEST {sc.name}\n"
+                    "  RESULT: FAILED [✗]\n"
+                    "  REASON: Failed to apply slice policy via FlexRIC xApp E2AP REST.\n"
+                    "========================================================================\n"
+                )
+                return False, eval_file
+            if not wait_ns_prb_policy_applied(rules, log_dir):
+                eval_file = log_dir / "evaluation.log"
+                eval_file.write_text(
+                    "========================================================================\n"
+                    f"  TEST {sc.name}\n"
+                    "  RESULT: FAILED [✗]\n"
+                    "  REASON: gNB mac stats NS UL/DL dedicated/min/max did not match xApp SET.\n"
+                    "========================================================================\n"
+                )
+                return False, eval_file
     else:
         print("  -> Slice policy from gNB startup YAML (bringup --scenario). xApp E2 not used.")
         with open(log_dir / "startup_slice_policy.txt", "w") as f:
@@ -1801,6 +2061,18 @@ def launch_tmux_session(
                 f.write(
                     f"  SST={r.sst} SD={r.sd} ded={r.dedicated} min={r.min_ratio} max={r.max_ratio}\n"
                 )
+        if is_pf_scenario(sc):
+            print("  -> PF test (startup YAML, sch=PF): expect no NS UL/DL slice PRB log.")
+            if not wait_no_ns_slice_log(log_dir):
+                eval_file = log_dir / "evaluation.log"
+                eval_file.write_text(
+                    "========================================================================\n"
+                    f"  TEST {sc.name}\n"
+                    "  RESULT: FAILED [✗]\n"
+                    "  REASON: PF scheduler (000) must not emit NS UL/DL slice PRB allocation logs.\n"
+                    "========================================================================\n"
+                )
+                return False, eval_file
 
     # Step 2: Ensure persistent UPF server receivers are running cleanly
     setup_iperf_servers(direction)
@@ -2174,11 +2446,14 @@ def run_batch_tests(
             print(f"  >>> EXECUTING BATCH TEST [{idx}/{len(test_keys)}]: #{test_key} - {scenario.name} <<<")
             print(f"========================================================================\033[0m")
 
-        # Startup YAML: restart gNB when dedicated/min/max group changes.
-        # E2AP: bring up once at 0/0/100%; later tests never restart gNB/UE.
-        should_restart = force_restart and (
-            slice_config_mode != SLICE_CONFIG_E2AP or idx == 1
-        )
+        # Start of a run: always restart gNB/UEs.
+        # Later cases: startup YAML restarts only if the slice group changed;
+        # E2AP NSBOTH cases do not restart (xApp SET only). PF (000) uses sch=PF
+        # and restarts when switching to/from NSBOTH (state key e2ap:pf vs e2ap:nsboth).
+        if slice_config_mode == SLICE_CONFIG_E2AP:
+            should_restart = idx == 1
+        else:
+            should_restart = idx == 1 or force_restart
         if not skip_prep:
             if not auto_prepare_testbed(
                 num_ues=5,
@@ -2328,8 +2603,9 @@ def run_cli(slice_config_mode: str = SLICE_CONFIG_STARTUP):
         "--force-restart",
         action="store_true",
         help=(
-            "Force restart gNB and UEs. For E2AP mode this only applies to the first "
-            "test in a batch (later tests still change slice via E2 only)."
+            "Restart gNB/UEs on the first test of this run (always happens) and, for "
+            "startup YAML, also when a later case shares the same slice group. "
+            "E2AP later cases never restart; they only SET policy via xApp."
         ),
     )
     parser.add_argument("--attach", action="store_true", default=False, help="Explicitly attach to interactive tmux session")

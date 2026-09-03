@@ -26,16 +26,16 @@ There are two ways to apply slice dedicated/min/max:
 
 | Runner | How slice config is applied | gNB / UE restart |
 | :--- | :--- | :--- |
-| **`test.py`** | gNB startup YAML (`bringup.py --scenario`) | Restart when the slice ratio group changes |
-| **`test_with_e2ap.py`** | FlexRIC xApp E2 Slice SM REST | Bring up once at **0/0/100%**; never restart; later tests only `PUT /api/v1/slices` |
+| **`test.py`** | gNB startup YAML (`bringup.py --scenario`) | Restart at the start of a run; later cases restart only if the slice group changed |
+| **`test_with_e2ap.py`** | FlexRIC xApp E2 Slice SM REST | Restart once per run at **0/0/100%**; later cases only `PUT /api/v1/slices`. Wait for mac stats `dedicated/min/max` before traffic. |
 
 ```bash
 cd /home/tuannv/INA-Infra-oai-slice-implementation/nws/test
 
-# Startup YAML (restart gNB when ratios change):
+# Startup YAML:
 python3 test.py --test 201
 
-# E2AP runtime control (first bringup 0/0/100, then no gNB/UE restart):
+# E2AP (one gNB/UE restart, then xApp SET + NS PRB verify per case):
 python3 test_with_e2ap.py --test 201 205 301
 ```
 

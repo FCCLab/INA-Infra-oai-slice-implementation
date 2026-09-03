@@ -2,9 +2,9 @@
 """
 3GPP Network Slicing Live rfsim Test Suite — gNB startup YAML slice config.
 
-Slice dedicated/min/max ratios are applied by (re)starting the gNB with
-scenario-specific Slices in the bringup YAML (`bringup.py --scenario`).
-FlexRIC xApp / E2 CONTROL is not used.
+Each run restarts gNB and UEs once. Later cases in the same run restart
+only when the YAML slice group changes. Slice dedicated/min/max ratios
+are applied via `bringup.py --scenario`. FlexRIC xApp / E2 is not used.
 
 Usage:
   python3 test.py

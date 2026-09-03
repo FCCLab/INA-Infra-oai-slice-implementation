@@ -2,10 +2,10 @@
 """
 3GPP Network Slicing Live rfsim Test Suite — FlexRIC xApp E2AP slice config.
 
-First bringup uses NSBOTH with dedicated=0 / min=0 / max=100 on all five
-S-NSSAIs. After that the gNB and UEs are never restarted: each test only
-changes slice policy via FlexRIC xApp REST (`PUT /api/v1/slices`), which
-issues E2 Slice SM CONTROL.
+Each run restarts gNB and UEs once at NSBOTH 0/0/100%. Later cases in the
+same run do not restart: they only change slice policy via FlexRIC xApp
+REST (`PUT /api/v1/slices`). Traffic starts after mac stats show the new
+NS UL/DL dedicated/min/max.
 
 Usage:
   python3 test_with_e2ap.py
