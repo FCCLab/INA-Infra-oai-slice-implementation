@@ -10,3 +10,6 @@
 	path = oai-cn5g-fed
 	url = https://github.com/FCCLab/INA-Infra-oai-cn5g-fed.git
 	branch = main
+[submodule "oai-nvidia"]
+	path = oai-nvidia
+	url = https://github.com/FCCLab/oai-nvidia

@@ -7,9 +7,11 @@ only when the YAML slice group changes. Slice dedicated/min/max ratios
 are applied via `bringup.py --scenario`. FlexRIC xApp / E2 is not used.
 
 Usage:
-  python3 test.py
-  python3 test.py --test 201
-  python3 test.py --test 201 205 301 --time 30
+    python3 test.py
+    python3 test.py --test 201
+    python3 test.py --test 201 205 301 --time 30
+    python3 test.py --undeploy
+    python3 test.py -u
 """
 
 from test_common import SLICE_CONFIG_STARTUP, cli_entry

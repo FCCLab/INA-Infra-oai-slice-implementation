@@ -736,6 +736,26 @@ def stop_xapp() -> None:
         run_cmd(["docker", "rm", "-f", XAPP_CONTAINER])
 
 
+def undeploy_testbed() -> int:
+    """Stop 5GC, RAN (gNB), and UE containers via bringup.py down --with-core."""
+    print("\n========================================================================")
+    print("           UNDEPLOY: 5GC + RAN + UEs")
+    print("========================================================================")
+    cmd = [sys.executable, str(BRINGUP_PY), "down", "--with-core"]
+    ret, _ = run_cmd_streaming_box(cmd, "Undeploy 5GC + RAN + UEs")
+    stop_xapp()
+    if STATE_FILE.is_file():
+        try:
+            STATE_FILE.unlink()
+        except OSError:
+            pass
+    if ret == 0:
+        print("\033[1;32m[OK] Containers undeployed (5GC, RAN, UEs).\033[0m\n")
+    else:
+        print(f"\033[1;31m[FAIL] Undeploy exited with code {ret}.\033[0m\n")
+    return ret
+
+
 def auto_prepare_testbed(
     num_ues: int = 5,
     scenario_name: Optional[str] = None,
@@ -2566,7 +2586,7 @@ def run_cli(slice_config_mode: str = SLICE_CONFIG_STARTUP):
     """CLI entry used by test.py (startup YAML) and test_with_e2ap.py (xApp E2AP)."""
     method = SLICE_CONFIG_LABELS.get(slice_config_mode, slice_config_mode)
     # If not inside tmux and running interactively in terminal, hand over to visual tmux session
-    skip_tmux = any(a in ("--no-attach", "--help", "-h") for a in sys.argv)
+    skip_tmux = any(a in ("--no-attach", "--help", "-h", "--undeploy", "-u") for a in sys.argv)
     if "TMUX" not in os.environ and sys.stdin.isatty() and not skip_tmux:
         TmuxManager.launch_in_tmux(sys.argv)
         return
@@ -2600,6 +2620,12 @@ def run_cli(slice_config_mode: str = SLICE_CONFIG_STARTUP):
     parser.add_argument("--streams", "-P", type=int, default=5, help="Number of parallel streams per UE (default: 5)")
     parser.add_argument("--skip-prep", action="store_true", help="Skip automated 5G testbed health check and preparation")
     parser.add_argument(
+        "-u",
+        "--undeploy",
+        action="store_true",
+        help="Undeploy 5GC, RAN (gNB), and UE containers and exit (bringup.py down --with-core)",
+    )
+    parser.add_argument(
         "--force-restart",
         action="store_true",
         help=(
@@ -2611,6 +2637,9 @@ def run_cli(slice_config_mode: str = SLICE_CONFIG_STARTUP):
     parser.add_argument("--attach", action="store_true", default=False, help="Explicitly attach to interactive tmux session")
     parser.add_argument("--no-attach", action="store_true", default=False, help="Run headless without attaching to tmux")
     args = parser.parse_args()
+
+    if args.undeploy:
+        sys.exit(undeploy_testbed())
 
     if args.menu:
         display_interactive_menu(slice_config_mode)

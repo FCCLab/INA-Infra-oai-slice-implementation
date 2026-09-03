@@ -8,9 +8,11 @@ REST (`PUT /api/v1/slices`). Traffic starts after mac stats show the new
 NS UL/DL dedicated/min/max.
 
 Usage:
-  python3 test_with_e2ap.py
-  python3 test_with_e2ap.py --test 201
-  python3 test_with_e2ap.py --test 201 205 301 --time 30
+    python3 test_with_e2ap.py
+    python3 test_with_e2ap.py --test 201
+    python3 test_with_e2ap.py --test 201 205 301 --time 30
+    python3 test_with_e2ap.py --undeploy
+    python3 test_with_e2ap.py -u
 """
 
 from test_common import SLICE_CONFIG_E2AP, cli_entry
