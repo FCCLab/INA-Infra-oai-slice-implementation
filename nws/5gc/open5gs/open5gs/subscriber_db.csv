@@ -12,7 +12,7 @@
 # IP_alloc: Statically assigned IP for the UE.
 # sst: 1
 # sd: ffffff
-# dnn: oai
+# dnn: oai (add_users.py also adds APN "default" as IPv4v6 on every slice)
 # session_type: 1 - IPv4," 2 - IPv6"," 3 - IPv4IPv6"
 # Note: Lines starting by '#' are ignored and will be overwritten
 # List of UEs with IMSI," and key increasing by one for each new UE. Useful for testing with AmariUE simulator and ue_count option"

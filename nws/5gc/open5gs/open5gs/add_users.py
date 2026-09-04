@@ -9,6 +9,30 @@ import sys
 from misc.db.python.Open5GS import Open5GS
 
 
+def _session(name, session_type, qci, ip_alloc):
+    session = {
+        "name": name,
+        "type": int(session_type),
+        "pcc_rule": [],
+        "ambr": {"uplink": {"value": 1, "unit": 3}, "downlink": {"value": 1, "unit": 3}},
+        "qos": {
+            "index": int(qci),
+            "arp": {"priority_level": 8, "pre_emption_capability": 1, "pre_emption_vulnerability": 1}
+        },
+    }
+    if ip_alloc:
+        session["ue"] = {"ipv4": ip_alloc}
+    return session
+
+
+def _sessions_for_slice(dnn, session_type, qci, ip_alloc):
+    '''CSV DNN plus default APN (always IPv4v6) on every slice.'''
+    sessions = [_session(dnn, 3 if dnn == "default" else session_type, qci, ip_alloc)]
+    if dnn != "default":
+        sessions.append(_session("default", 3, qci, ip_alloc))
+    return sessions
+
+
 def add_user(imsi, key="00112233445566778899aabbccddeeff", op=None,
              opc="63bfa50ee6523365ff14c1f45f88737d", amf="9001", 
              apn="srsapn", qci="9", ip_alloc="", sst=1, sd="ffffff",
@@ -18,35 +42,23 @@ def add_user(imsi, key="00112233445566778899aabbccddeeff", op=None,
     if op is not None:
         opc = None
 
+    sessions = _sessions_for_slice(dnn, session_type, qci, ip_alloc)
     slice_data = [
         {
             "sst": int(sst),
             "sd": sd,
             "default_indicator": True,
-            "session": [
-                {
-                    "name": dnn,
-                    "type": int(session_type), "pcc_rule": [], "ambr": {"uplink": {"value": 1, "unit": 3}, "downlink": {"value": 1, "unit": 3}},
-                    "qos": {
-                        "index": int(qci),
-                        "arp": {"priority_level": 8, "pre_emption_capability": 1, "pre_emption_vulnerability": 1}
-                    },
-                    "ue": {
-                        "ipv4": ip_alloc
-                    }
-                }
-                # ,
-                # {
-                #     "name": "ims",
-                #     "type": 3, "pcc_rule": [], "ambr": {"uplink": {"value": 1, "unit": 3}, "downlink": {"value": 1, "unit": 3}},
-                #     "qos": {
-                #         "index": 5,
-                #         "arp": {"priority_level": 8, "pre_emption_capability": 1, "pre_emption_vulnerability": 1}
-                #     }
-                # }
-            ]
+            "session": sessions,
         }
     ]
+    # Phones often register SST 1 / ffffff; keep default APN on that slice too.
+    if str(sd).lower() not in ("ffffff", "0xffffff"):
+        slice_data.append({
+            "sst": int(sst),
+            "sd": "ffffff",
+            "default_indicator": False,
+            "session": sessions,
+        })
 
     sub_data = {
         "imsi": imsi,
