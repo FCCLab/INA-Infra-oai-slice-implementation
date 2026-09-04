@@ -43,6 +43,8 @@ def add_user(imsi, key="00112233445566778899aabbccddeeff", op=None,
         opc = None
 
     sessions = _sessions_for_slice(dnn, session_type, qci, ip_alloc)
+    # One S-NSSAI per IMSI (CSV sd): UE1→000001 … UE5→000005. Do not also
+    # subscribe ffffff or COTS phones that request SST 1 / ffffff stay on slice 0.
     slice_data = [
         {
             "sst": int(sst),
@@ -51,14 +53,6 @@ def add_user(imsi, key="00112233445566778899aabbccddeeff", op=None,
             "session": sessions,
         }
     ]
-    # Phones often register SST 1 / ffffff; keep default APN on that slice too.
-    if str(sd).lower() not in ("ffffff", "0xffffff"):
-        slice_data.append({
-            "sst": int(sst),
-            "sd": "ffffff",
-            "default_indicator": False,
-            "session": sessions,
-        })
 
     sub_data = {
         "imsi": imsi,

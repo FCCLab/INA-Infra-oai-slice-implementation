@@ -4,7 +4,7 @@ services:
     nws-nearRT-RIC:
         build:
             context: ../../openairinterface5g/openair2/E2AP/flexric
-            dockerfile: docker/Dockerfile.flexric.ubuntu
+            dockerfile: ../build_scripts/Dockerfile.flexric.ubuntu
             args:
                 BASE_IMAGE: ubuntu:noble
         image: oai-flexric:latest

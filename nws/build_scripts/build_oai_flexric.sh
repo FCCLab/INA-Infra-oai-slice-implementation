@@ -17,14 +17,16 @@ fi
 
 sudo rm -rf ${OAI_DIR}/openair2/E2AP/flexric/build
 
-echo "Building oai-flexric:latest..."
-cd "${OAI_DIR}"
+DOCKERFILE="${SCRIPT_DIR}/Dockerfile.flexric.ubuntu"
+FLEXRIC_DIR="${OAI_DIR}/openair2/E2AP/flexric"
+
+echo "Building oai-flexric:latest (Dockerfile ${DOCKERFILE})..."
 docker build \
     --target oai-flexric \
     --tag oai-flexric:latest \
     --build-arg BASE_IMAGE=ubuntu:noble \
-    --file openair2/E2AP/flexric/docker/Dockerfile.flexric.ubuntu \
-    openair2/E2AP/flexric
+    --file "${DOCKERFILE}" \
+    "${FLEXRIC_DIR}"
 
 docker tag oai-flexric:latest oai-flexric:latest-${ARCH_TAG}
 echo "Successfully built and tagged oai-flexric:latest (${ARCH_TAG})"

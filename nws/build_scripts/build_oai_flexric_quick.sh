@@ -11,7 +11,7 @@ BUILD_DIR="${FLEXRIC_DIR}/build"
 STAGING_DIR="${SCRIPT_DIR}/staging/flexric"
 DOCKERFILE="${SCRIPT_DIR}/Dockerfile.flexric.quick.ubuntu"
 BUILDER_IMAGE="oai-flexric-builder:latest"
-BUILDER_DOCKERFILE="${FLEXRIC_DIR}/docker/Dockerfile.flexric.ubuntu"
+BUILDER_DOCKERFILE="${SCRIPT_DIR}/Dockerfile.flexric.ubuntu"
 
 E2AP_VERSION="${E2AP_VERSION:-E2AP_V3}"
 KPM_VERSION="${KPM_VERSION:-KPM_V3_00}"
@@ -108,7 +108,7 @@ ensure_host_asn1c() {
     fi
     echo "error: asn1c not found at ${HOST_ASN1C_PREFIX}/bin/asn1c and not in ${BUILDER_IMAGE}." >&2
     echo "  FlexRIC needs asn1c to generate examples/.../RRC_MESSAGES (xapp_sdk / e42_xapp_db)." >&2
-    echo "  Install mouse07410 asn1c to ${HOST_ASN1C_PREFIX}, or rebuild builder from Dockerfile.flexric.ubuntu (--force-builder)." >&2
+    echo "  Install mouse07410 asn1c to ${HOST_ASN1C_PREFIX}, or rebuild builder from ${BUILDER_DOCKERFILE} (--force-builder)." >&2
     exit 1
 }
 

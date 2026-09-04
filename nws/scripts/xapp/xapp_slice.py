@@ -626,15 +626,16 @@ def ric_logs_show_e2_setup(ric_container: str) -> bool:
     if not shutil.which("docker"):
         return False
     try:
+        # Full logs: E2 SETUP is a one-shot line and scrolls out of --tail 300.
         out = subprocess.check_output(
-            ["docker", "logs", "--tail", "300", ric_container],
+            ["docker", "logs", ric_container],
             stderr=subprocess.STDOUT,
             text=True,
-            timeout=10,
+            timeout=15,
         )
     except (OSError, subprocess.SubprocessError):
         return False
-    return "E2 SETUP-REQUEST rx" in out
+    return "E2 SETUP-REQUEST rx" in out or "Accepting RAN function ID 145" in out
 
 
 def wait_ric_e2_before_xapp_init(*, timeout_s: float, ric_container: str) -> bool:

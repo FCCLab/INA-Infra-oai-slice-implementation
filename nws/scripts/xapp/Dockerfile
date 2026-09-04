@@ -1,9 +1,11 @@
 # nws xApp runtime — reuse FlexRIC image (same as nws-nearRT-RIC).
 #
-# Build FlexRIC first if needed:
+# Package:
+#   nws/build_scripts/build_nws_xapp.sh
+#   nws/build_scripts/build_nws_xapp.sh --with-flexric   # if xapp_sdk.py missing
+# FlexRIC image:
 #   nws/build_scripts/build_oai_flexric.sh
-# which builds from:
-#   openairinterface5g/openair2/E2AP/flexric/docker/Dockerfile.flexric.ubuntu
+# (nws/build_scripts/Dockerfile.flexric.ubuntu uses -DXAPP_MULTILANGUAGE=ON)
 
 ARG FLEXRIC_IMAGE=oai-flexric:latest
 FROM ${FLEXRIC_IMAGE}
@@ -17,6 +19,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
     NWS_XAPP_API_PORT=18080
 
 WORKDIR /xapp
+
+RUN test -f /usr/local/flexric/xApp/python3/xapp_sdk.py
 
 COPY xapp_slice.py /xapp/xapp_slice.py
 COPY slice_gui.html /xapp/slice_gui.html

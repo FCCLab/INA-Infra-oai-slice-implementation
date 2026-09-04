@@ -48,7 +48,8 @@ Always run scripts from any cwd — they resolve paths relative to `nws/build_sc
 | `build_oai_gnb.sh` | `oai-gnb`, `oai-cucp`, `oai-du` | `openairinterface5g/docker/Dockerfile.gNB.ubuntu` | Packages softmodem; accepts `--no-cache` |
 | `build_oai_nr_cuup.sh` | `oai-nr-cuup:latest` | `openairinterface5g/docker/Dockerfile.nr-cuup.ubuntu` | Needed for CU/DU split |
 | `build_oai_nr_ue.sh` | `oai-nr-ue:latest` | `openairinterface5g/docker/Dockerfile.nrUE.ubuntu` | UE rfsim image |
-| `build_oai_flexric.sh` | `oai-flexric:latest` | `openairinterface5g/openair2/E2AP/flexric/docker/Dockerfile.flexric.ubuntu` | nearRT-RIC / xApp |
+| `build_oai_flexric.sh` | `oai-flexric:latest` | `nws/build_scripts/Dockerfile.flexric.ubuntu` | nearRT-RIC + Python SDK (`-DXAPP_MULTILANGUAGE=ON`); context is OAI flexric sources |
+| `build_nws_xapp.sh` | `nws-xapp:latest` | `nws/scripts/xapp/Dockerfile` | Slice xApp REST; `--with-flexric` if `xapp_sdk.py` missing |
 | `build_smf.sh` | `oai-smf:$TAG` | `oai-cn5g-fed/component/oai-smf/docker/Dockerfile.smf.ubuntu` | Not in `build_release.sh` |
 
 ## Build order and dependencies
@@ -57,7 +58,7 @@ Always run scripts from any cwd — they resolve paths relative to `nws/build_sc
 ran-base → ran-build → oai-gnb (also tags oai-cucp, oai-du)
                     ↘ oai-nr-cuup
                     ↘ oai-nr-ue
-                    ↘ oai-flexric
+                    ↘ oai-flexric → nws-xapp
 
 oai-smf  (independent; needs git submodules in SMF tree)
 ```
@@ -76,6 +77,7 @@ Every image gets `latest` plus an arch suffix (`amd64` or `arm64`):
 | `oai-nr-cuup:latest` | — |
 | `oai-nr-ue:latest` | — |
 | `oai-flexric:latest` | — |
+| `nws-xapp:latest` | — |
 | `ran-base:latest` | — |
 | `ran-build:latest` | — |
 | `oai-smf:$TAG` | also `oaisoftwarealliance/oai-smf:$TAG` |
@@ -87,7 +89,7 @@ Every image gets `latest` plus an arch suffix (`amd64` or `arm64`):
 | MAC scheduler / L2 sources (`openairinterface5g/openair2/`) | `build_ran_build.sh` + `build_oai_gnb.sh` |
 | CU-UP only | `build_oai_nr_cuup.sh` |
 | UE changes | `build_oai_nr_ue.sh` |
-| FlexRIC / E2AP / slice_sm encoder | `build_oai_flexric_quick.sh` (incremental) or `build_oai_flexric.sh` (full) |
+| FlexRIC / E2AP / slice_sm encoder | `build_oai_flexric_quick.sh` (incremental) or `build_oai_flexric.sh` (full). Do **not** edit `openairinterface5g/.../flexric/docker/Dockerfile.flexric.ubuntu`; NWS overlay is `nws/build_scripts/Dockerfile.flexric.ubuntu` (`-DXAPP_MULTILANGUAGE=ON`). |
 | SMF / DNN patches | `build_smf.sh` (bump `--tag` suffix) |
 | Fresh machine / corrupted cache | `build_release.sh` or pass `--no-cache` |
 | Docker base image / deps | start from `build_ran_base.sh` or full release |
