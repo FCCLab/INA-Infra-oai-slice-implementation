@@ -49,7 +49,7 @@ Always run scripts from any cwd — they resolve paths relative to `nws/build_sc
 | `build_oai_nr_cuup.sh` | `oai-nr-cuup:latest` | `openairinterface5g/docker/Dockerfile.nr-cuup.ubuntu` | Needed for CU/DU split |
 | `build_oai_nr_ue.sh` | `oai-nr-ue:latest` | `openairinterface5g/docker/Dockerfile.nrUE.ubuntu` | UE rfsim image |
 | `build_oai_flexric.sh` | `oai-flexric:latest` | `nws/build_scripts/Dockerfile.flexric.ubuntu` | nearRT-RIC + Python SDK (`-DXAPP_MULTILANGUAGE=ON`); context is OAI flexric sources |
-| `build_nws_xapp.sh` | `nws-xapp:latest` | `nws/scripts/xapp/Dockerfile` | Slice xApp REST; `--with-flexric` if `xapp_sdk.py` missing |
+| `build_nws_xapp.sh` | `nws-xapp:latest` | `nws/app_xapp/Dockerfile` | Slice xApp REST + console; `--with-flexric` if `xapp_sdk.py` missing |
 | `build_smf.sh` | `oai-smf:$TAG` | `oai-cn5g-fed/component/oai-smf/docker/Dockerfile.smf.ubuntu` | Not in `build_release.sh` |
 
 ## Build order and dependencies

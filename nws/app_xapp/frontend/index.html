@@ -109,8 +109,8 @@
 </head>
 <body>
   <header>
-    <h1>NWS NS Slice Policy</h1>
-    <p>Live OAI PRB policy from FlexRIC Slice SM — compare live values and SET via E2</p>
+    <h1>NWS NS Slice Policy — xApp console</h1>
+    <p>Frontend console (this port). Backend Swagger REST is on the API port — live OAI PRB policy over FlexRIC Slice SM.</p>
   </header>
   <main>
     <section>
@@ -164,8 +164,18 @@
     const msg = $('#msg');
     let timer = null;
     let lastSnapshot = null;
+    let API_BASE = '';
     /** @type {Map<string, {dedicated:number,min:number,max:number}>} */
     const editDraft = new Map();
+
+    async function loadConfig() {
+      try {
+        const cfg = await fetch('config.json').then((r) => r.json());
+        API_BASE = String(cfg.api_base || '').replace(/\/$/, '');
+      } catch (e) {
+        API_BASE = `${location.protocol}//${location.hostname}:18080`;
+      }
+    }
 
     function isDefaultSd(sd) {
       const s = String(sd).toLowerCase();
@@ -178,7 +188,7 @@
     }
 
     async function api(path, opts) {
-      const res = await fetch(path, opts);
+      const res = await fetch(API_BASE + path, opts);
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(body.error || res.statusText || `HTTP ${res.status}`);
       return body;
@@ -197,10 +207,10 @@
         li.innerHTML = `
           <span class="kind">${h.kind || 'host'}</span>
           <span class="iface">${h.iface || ''}</span>
-          <a href="${h.gui}" target="_blank" rel="noopener">${h.gui}</a>
+          <a href="${h.console || h.gui}" target="_blank" rel="noopener">${h.console || h.gui}</a>
           <a href="${h.api}" target="_blank" rel="noopener">API</a>
           <a href="${h.docs}" target="_blank" rel="noopener">Swagger</a>
-          <button type="button" class="secondary btn" data-copy="${h.gui}">Copy GUI URL</button>
+          <button type="button" class="secondary btn" data-copy="${h.console || h.gui}">Copy console URL</button>
         `;
         ul.appendChild(li);
       }
@@ -510,8 +520,10 @@
     $('#applyAllBtn').addEventListener('click', applyAll);
     $('#syncEditsBtn').addEventListener('click', syncAllEditsFromLive);
     $('#autoRefresh').addEventListener('change', schedule);
-    refresh();
-    schedule();
+    loadConfig().then(() => {
+      refresh();
+      schedule();
+    });
   </script>
 </body>
 </html>

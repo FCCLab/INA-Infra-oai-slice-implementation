@@ -1,0 +1,31 @@
+# Slice rApp — Non-RT intent/policy backend + frontend console (same image).
+#
+# Southbound: near-RT xApp REST on :18080 (host network).
+#
+# Usage:
+#   cd nws/app_rapp
+#   docker compose up --build
+#   curl -s http://127.0.0.1:18090/api/v1/status | jq .
+#   # Swagger (backend): http://127.0.0.1:18090/docs
+#   # Console (frontend): http://127.0.0.1:18091/
+
+services:
+  nws-rapp-slice-intent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: nws-rapp:latest
+    container_name: nws-rapp-slice-intent
+    network_mode: host
+    environment:
+      NWS_RAPP_API_HOST: "0.0.0.0"
+      NWS_RAPP_API_PORT: "${RAPP_API_HOST_PORT:-18090}"
+      NWS_RAPP_UI_PORT: "${RAPP_UI_HOST_PORT:-18091}"
+      NWS_XAPP_API_BASE: "${NWS_XAPP_API_BASE:-http://127.0.0.1:18080}"
+    volumes:
+      - ./out:/rapp/out
+      - ./backend/rapp_slice.py:/rapp/backend/rapp_slice.py:ro
+      - ./frontend:/rapp/frontend:ro
+    stdin_open: true
+    tty: true
+    restart: "no"

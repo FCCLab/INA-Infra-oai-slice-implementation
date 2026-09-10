@@ -121,17 +121,21 @@ cd /home/tuannv/INA-Infra-oai-slice-implementation/nws/test
 ```
 *Logs:* Automatically saved per-test with timestamps in `nws/test/logs/<test_name>_<timestamp>/`.
 
-### Step 5: FlexRIC xApp Runtime Monitoring & Control
-The FlexRIC xApp provides real-time slice statistics and dynamic E2 control via REST API:
+### Step 5: FlexRIC xApp + Non-RT rApp
+Each app is one image with backend (Swagger REST) and frontend console on different ports.
+
 ```bash
-# Start the xApp
-cd /home/tuannv/INA-Infra-oai-slice-implementation/nws/scripts/xapp
+# Near-RT xApp (E2 Slice SM monitor + SET)
+cd /home/tuannv/INA-Infra-oai-slice-implementation/nws/app_xapp
 docker compose up -d --build
-
-# Query active slice configurations and statistics
 curl -s http://127.0.0.1:18080/api/v1/slices | jq .
+# Swagger: http://127.0.0.1:18080/docs   Console: http://127.0.0.1:18081/
 
-# Swagger API docs available at: http://127.0.0.1:18080/docs
+# Non-RT rApp (slice intents / profiles → xApp)
+cd /home/tuannv/INA-Infra-oai-slice-implementation/nws/app_rapp
+docker compose up -d --build
+curl -s http://127.0.0.1:18090/api/v1/status | jq .
+# Swagger: http://127.0.0.1:18090/docs   Console: http://127.0.0.1:18091/
 ```
 
 ---

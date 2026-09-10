@@ -1,15 +1,16 @@
-# Slice xApp (monitor + REST) — host network.
+# Slice xApp — backend REST + frontend console (same image, host network).
 #
 # Prerequisites:
 #   - oai-flexric:latest (nws/build_scripts/build_oai_flexric.sh)
-#   - nws-nearRT-RIC already running (bringup.py / RAN compose) at 192.168.201.142
+#   - nws-nearRT-RIC already running (bringup.py) at 192.168.201.142
 #   - gNB YAML e2_agent.near_ric_ip_addr = 192.168.201.142
 #
 # Usage:
-#   cd nws/scripts/xapp
+#   cd nws/app_xapp
 #   docker compose up --build
 #   curl -s http://127.0.0.1:18080/api/v1/slices | jq .
-#   # Lab LAN (this host): http://10.1.132.13:18080/docs  (not .200)
+#   # Swagger (backend): http://127.0.0.1:18080/docs
+#   # Console (frontend): http://127.0.0.1:18081/
 
 services:
   nws-xapp-slice-monitor:
@@ -29,11 +30,12 @@ services:
       NEAR_RIC_IP: ${NEAR_RIC_IP:-192.168.201.142}
       NWS_XAPP_API_HOST: "0.0.0.0"
       NWS_XAPP_API_PORT: "${XAPP_API_HOST_PORT:-18080}"
+      NWS_XAPP_UI_PORT: "${XAPP_UI_HOST_PORT:-18081}"
     volumes:
-      - ../../configs/flexric/flexric.conf:/usr/local/etc/flexric/flexric.conf:ro
+      - ../configs/flexric/flexric.conf:/usr/local/etc/flexric/flexric.conf:ro
       - ./out:/xapp/out
-      - ./xapp_slice.py:/xapp/xapp_slice.py:ro
-      - ./slice_gui.html:/xapp/slice_gui.html:ro
+      - ./backend/xapp_slice.py:/xapp/backend/xapp_slice.py:ro
+      - ./frontend:/xapp/frontend:ro
       - /var/run/docker.sock:/var/run/docker.sock
       - /usr/bin/docker:/usr/bin/docker:ro
     stdin_open: true

@@ -32,11 +32,12 @@ from pathlib import Path
 from typing import Optional
 
 BASE_DIR = Path(__file__).resolve().parent
+NWS_DIR = BASE_DIR.parent
 LOGS_DIR = BASE_DIR / "logs"
-SCRIPTS_DIR = BASE_DIR.parent / "scripts"
+SCRIPTS_DIR = NWS_DIR / "scripts"
 BRINGUP_PY = SCRIPTS_DIR / "bringup.py"
-CORE_COMPOSE = BASE_DIR.parent / "5gc" / "open5gs" / "docker-compose.yml"
-XAPP_COMPOSE = SCRIPTS_DIR / "xapp" / "docker-compose.yml"
+CORE_COMPOSE = NWS_DIR / "5gc" / "open5gs" / "docker-compose.yml"
+XAPP_COMPOSE = NWS_DIR / "app_xapp" / "docker-compose.yml"
 
 XAPP_API_URL = "http://127.0.0.1:18080/api/v1/slices"
 XAPP_HEALTH_URL = "http://127.0.0.1:18080/health"

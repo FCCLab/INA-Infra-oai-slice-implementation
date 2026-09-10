@@ -1,0 +1,551 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>NWS O-RAN Slice SLA rApp</title>
+  <style>
+    :root {
+      --bg: #0f1419; --panel: #1a2332; --border: #2d3a4f; --text: #e7ecf3;
+      --muted: #8b9cb3; --accent: #3d8bfd; --ok: #3dd68c; --warn: #f5a524; --err: #f87171;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: ui-sans-serif, system-ui, sans-serif; background: var(--bg); color: var(--text); line-height: 1.45; }
+    header { padding: 1rem 1.25rem; border-bottom: 1px solid var(--border); background: var(--panel); }
+    header h1 { margin: 0 0 .25rem; font-size: 1.25rem; }
+    header p { margin: 0; color: var(--muted); font-size: .9rem; }
+    main { padding: 1rem 1.25rem 2rem; max-width: 1500px; }
+    section { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 1rem; margin-bottom: 1rem; }
+    h2 { margin: 0 0 .75rem; font-size: 1rem; }
+    .toolbar { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; margin-bottom: .75rem; }
+    button { background: var(--accent); color: #fff; border: 0; border-radius: 6px; padding: .45rem .8rem; font-size: .875rem; cursor: pointer; }
+    button.secondary { background: #334155; }
+    button.danger { background: #7f1d1d; }
+    .status { display: flex; flex-wrap: wrap; gap: 1rem; font-size: .875rem; color: var(--muted); margin-bottom: .75rem; }
+    .status strong { color: var(--text); }
+    .pill { display: inline-block; padding: .1rem .45rem; border-radius: 999px; font-size: .75rem; background: #243044; }
+    .pill.ok { color: var(--ok); } .pill.err { color: var(--err); }
+    table { width: 100%; border-collapse: collapse; font-size: .8rem; }
+    th, td { border-bottom: 1px solid var(--border); padding: .4rem; text-align: left; vertical-align: top; }
+    th { color: var(--muted); }
+    .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: .75rem; }
+    .card { border: 1px solid var(--border); border-radius: 8px; padding: .75rem; background: #121a26; }
+    .card.loaded { border-color: var(--ok); }
+    .card h3 { margin: 0 0 .35rem; font-size: .9rem; }
+    .card p { margin: 0 0 .65rem; color: var(--muted); font-size: .78rem; }
+    button:disabled { opacity: .45; cursor: not-allowed; }
+    #msg { min-height: 1.25rem; font-size: .875rem; margin-top: .5rem; }
+    #msg.ok { color: var(--ok); } #msg.err { color: var(--err); }
+    .hint { color: var(--muted); font-size: .8rem; margin: 0 0 .75rem; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+    @media (max-width: 980px) { .grid { grid-template-columns: 1fr; } }
+    label.field { display: block; margin-bottom: .45rem; color: var(--muted); font-size: .78rem; }
+    input[type="text"], input[type="number"], textarea, select {
+      width: 100%; background: #0b1220; border: 1px solid var(--border); color: var(--text);
+      border-radius: 4px; padding: .35rem .45rem; font-size: .8rem;
+    }
+    textarea { font-family: ui-monospace, Menlo, monospace; min-height: 280px; }
+    .row { display: grid; grid-template-columns: repeat(4, 1fr); gap: .4rem; }
+    @media (max-width: 800px) { .row { grid-template-columns: 1fr 1fr; } }
+    .group { border: 1px solid var(--border); border-radius: 8px; padding: .65rem; margin-bottom: .65rem; background: #121a26; }
+    .group h3 { margin: 0 0 .5rem; font-size: .82rem; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+    pre { white-space: pre-wrap; font-size: .75rem; color: var(--muted); margin: 0; }
+    a { color: var(--accent); }
+    .row-actions { display: flex; flex-wrap: wrap; gap: .35rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>O-RAN A1 Slice SLA — rApp console</h1>
+    <p>Policy type <code>ORAN_SliceSLATarget_3.0.0</code> (ETSI TS 103 988). Send SLA targets to the near-RT xApp as-is — not PRB %.</p>
+  </header>
+  <main>
+    <section>
+      <div class="toolbar">
+        <button id="refreshBtn" type="button">Refresh</button>
+        <label style="color:var(--muted);font-size:.875rem"><input id="autoRefresh" type="checkbox" checked/> Auto-refresh (3s)</label>
+        <a id="docsLink" href="#" target="_blank" rel="noopener">Swagger</a>
+      </div>
+      <div class="status" id="meta"></div>
+      <div id="msg"></div>
+    </section>
+
+    <section>
+      <h2>Examples (add / unload fields)</h2>
+      <p class="hint">Each example fills only its own fields. Add several together; Unload clears that example only. Scope (SST/SD/PLMN) stays as you set it. Send the composed JSON from the editor.</p>
+      <div class="cards" id="examples">Loading…</div>
+    </section>
+
+    <section>
+      <h2>Compose A1 policy and send to xApp</h2>
+      <p class="hint">Fill scope + any SLA objectives (empty fields are omitted). Throughput is in <strong>kbps</strong>. Send PUTs <code>/api/v1/a1/slice-sla</code> on the xApp.</p>
+      <div class="grid">
+        <div>
+          <div class="group">
+            <h3>scope.sliceId</h3>
+            <div class="row">
+              <label class="field">SST <input id="sst" type="number" min="0" max="255" value="1"/></label>
+              <label class="field">SD (6 hex) <input id="sd" type="text" value="456DEF"/></label>
+              <label class="field">MCC <input id="mcc" type="text" value="248"/></label>
+              <label class="field">MNC <input id="mnc" type="text" value="35"/></label>
+            </div>
+          </div>
+          <div class="group">
+            <h3>UE / PDU session caps</h3>
+            <div class="row">
+              <label class="field">maxNumberOfUes <input id="maxNumberOfUes" type="number" min="0" placeholder=""/></label>
+              <label class="field">maxNumberOfPduSessions <input id="maxNumberOfPduSessions" type="number" min="0"/></label>
+            </div>
+          </div>
+          <div class="group">
+            <h3>Throughput (kbps)</h3>
+            <div class="row">
+              <label class="field">guaDlThptPerSlice <input id="guaDlThptPerSlice" type="number" min="0"/></label>
+              <label class="field">maxDlThptPerSlice <input id="maxDlThptPerSlice" type="number" min="0"/></label>
+              <label class="field">maxDlThptPerUe <input id="maxDlThptPerUe" type="number" min="0"/></label>
+              <label class="field">guaUlThptPerSlice <input id="guaUlThptPerSlice" type="number" min="0"/></label>
+              <label class="field">maxUlThptPerSlice <input id="maxUlThptPerSlice" type="number" min="0"/></label>
+              <label class="field">maxUlThptPerUe <input id="maxUlThptPerUe" type="number" min="0"/></label>
+            </div>
+          </div>
+          <div class="group">
+            <h3>Delay / loss / reliability</h3>
+            <div class="row">
+              <label class="field">maxDlPacketDelayPerUe <input id="maxDlPacketDelayPerUe" type="number" min="0"/></label>
+              <label class="field">maxUlPacketDelayPerUe <input id="maxUlPacketDelayPerUe" type="number" min="0"/></label>
+              <label class="field">maxDlPdcpSduPacketLossRatePerUe <input id="maxDlPdcpSduPacketLossRatePerUe" type="number" min="0" max="1" step="0.001"/></label>
+              <label class="field">maxUlRlcSduPacketLossRatePerUe <input id="maxUlRlcSduPacketLossRatePerUe" type="number" min="0" max="1" step="0.001"/></label>
+            </div>
+            <div class="row">
+              <label class="field">minDl packetSize <input id="dlRelPkt" type="number" min="0"/></label>
+              <label class="field">minDl userPlaneLatency <input id="dlRelLat" type="number" min="0"/></label>
+              <label class="field">minDl successProbability <input id="dlRelSuc" type="number" min="0" max="1" step="0.01"/></label>
+            </div>
+            <div class="row">
+              <label class="field">minUl packetSize <input id="ulRelPkt" type="number" min="0"/></label>
+              <label class="field">minUl userPlaneLatency <input id="ulRelLat" type="number" min="0"/></label>
+              <label class="field">minUl successProbability <input id="ulRelSuc" type="number" min="0" max="1" step="0.01"/></label>
+            </div>
+          </div>
+          <div class="group">
+            <h3>Jitter / priority / packet size</h3>
+            <div class="row">
+              <label class="field">maxDlJitterPerUe <input id="maxDlJitterPerUe" type="number" min="0" step="0.1"/></label>
+              <label class="field">maxUlJitterPerUe <input id="maxUlJitterPerUe" type="number" min="0" step="0.1"/></label>
+              <label class="field">dlSlicePriority <input id="dlSlicePriority" type="number" min="1"/></label>
+              <label class="field">ulSlicePriority <input id="ulSlicePriority" type="number" min="1"/></label>
+              <label class="field">maxDlPktSize <input id="maxDlPktSize" type="number" min="0"/></label>
+              <label class="field">maxUlPktSize <input id="maxUlPktSize" type="number" min="0"/></label>
+            </div>
+          </div>
+          <div class="group">
+            <h3>sliceSlaResources.cellIdList (optional, ncI CSV)</h3>
+            <label class="field">NR cell identities <input id="cellNcis" type="text" placeholder="101,102"/></label>
+          </div>
+          <div class="toolbar">
+            <button id="syncJsonBtn" type="button" class="secondary">Form → JSON</button>
+            <button id="validateBtn" type="button" class="secondary">Validate</button>
+            <button id="saveBtn" type="button" class="secondary">Save on rApp</button>
+            <button id="sendBtn" type="button">Send to xApp</button>
+          </div>
+        </div>
+        <div>
+          <label class="field">A1 JSON (source of truth when sending)
+            <textarea id="policyJson"></textarea>
+          </label>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>On xApp now</h2>
+      <p class="hint">GET xApp <code>/api/v1/a1/slice-sla</code> via this rApp.</p>
+      <div style="overflow-x:auto">
+        <table>
+          <thead><tr><th>Key</th><th>SST / SD / PLMN</th><th>Objectives</th></tr></thead>
+          <tbody id="xappSlaBody"><tr><td colspan="3">—</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section>
+      <h2>Saved on rApp</h2>
+      <div style="overflow-x:auto">
+        <table>
+          <thead><tr><th>Name</th><th>Id</th><th>Slice</th><th></th></tr></thead>
+          <tbody id="savedBody"><tr><td colspan="4">None yet</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section>
+      <h2>Send history</h2>
+      <div style="overflow-x:auto">
+        <table>
+          <thead><tr><th>When</th><th>Source</th><th>OK</th><th>Slice</th></tr></thead>
+          <tbody id="histBody"><tr><td colspan="4">Empty</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+  <script>
+    const $ = (sel) => document.querySelector(sel);
+    const NUM_OBJ = [
+      'maxNumberOfUes','maxNumberOfPduSessions',
+      'guaDlThptPerSlice','maxDlThptPerSlice','maxDlThptPerUe',
+      'guaUlThptPerSlice','maxUlThptPerSlice','maxUlThptPerUe',
+      'maxDlPacketDelayPerUe','maxUlPacketDelayPerUe',
+      'maxDlPdcpSduPacketLossRatePerUe','maxUlRlcSduPacketLossRatePerUe',
+      'maxDlJitterPerUe','maxUlJitterPerUe','dlSlicePriority','ulSlicePriority',
+      'maxDlPktSize','maxUlPktSize',
+    ];
+    const REL_MAP = {
+      minDlReliabilityPerUe: { packetSize: '#dlRelPkt', userPlaneLatency: '#dlRelLat', successProbability: '#dlRelSuc' },
+      minUlReliabilityPerUe: { packetSize: '#ulRelPkt', userPlaneLatency: '#ulRelLat', successProbability: '#ulRelSuc' },
+    };
+    let API_BASE = '';
+    let timer = null;
+    let examples = [];
+    let examplesRendered = false;
+    const loadedExamples = new Set();
+
+    async function loadConfig() {
+      try {
+        const cfg = await fetch('config.json').then((r) => r.json());
+        API_BASE = String(cfg.api_base || '').replace(/\/$/, '');
+        if (cfg.docs) $('#docsLink').href = cfg.docs;
+      } catch (e) {
+        API_BASE = `${location.protocol}//${location.hostname}:18090`;
+        $('#docsLink').href = API_BASE + '/docs';
+      }
+    }
+
+    function showMsg(text, kind) {
+      const el = $('#msg');
+      el.textContent = text || '';
+      el.className = kind || '';
+    }
+
+    async function api(path, opts) {
+      const res = await fetch(API_BASE + path, opts);
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || res.statusText || `HTTP ${res.status}`);
+      return body;
+    }
+
+    function numOrNull(id) {
+      const v = $(id).value;
+      if (v === '' || v == null) return null;
+      const n = Number(v);
+      return Number.isNaN(n) ? null : n;
+    }
+
+    function reliability(pkt, lat, suc) {
+      const a = numOrNull(pkt), b = numOrNull(lat), c = numOrNull(suc);
+      if (a == null && b == null && c == null) return null;
+      return { packetSize: a ?? 0, userPlaneLatency: b ?? 0, successProbability: c ?? 0 };
+    }
+
+    function buildPolicyFromForm() {
+      const sliceId = {
+        sst: Number($('#sst').value),
+        sd: $('#sd').value.trim(),
+        plmnId: { mcc: $('#mcc').value.trim(), mnc: $('#mnc').value.trim() },
+      };
+      if (!sliceId.sd) delete sliceId.sd;
+      const obj = {};
+      for (const k of NUM_OBJ) {
+        const n = numOrNull('#' + k);
+        if (n != null) obj[k] = n;
+      }
+      const dlR = reliability('#dlRelPkt', '#dlRelLat', '#dlRelSuc');
+      const ulR = reliability('#ulRelPkt', '#ulRelLat', '#ulRelSuc');
+      if (dlR) obj.minDlReliabilityPerUe = dlR;
+      if (ulR) obj.minUlReliabilityPerUe = ulR;
+      const policy = { scope: { sliceId }, sliceSlaObjectives: obj };
+      const ncis = $('#cellNcis').value.split(',').map((s) => s.trim()).filter(Boolean);
+      if (ncis.length) {
+        policy.sliceSlaResources = {
+          cellIdList: ncis.map((n) => ({
+            plmnId: { ...sliceId.plmnId },
+            cId: { ncI: Number(n) },
+          })),
+        };
+      }
+      return policy;
+    }
+
+    function clearForm() {
+      for (const k of NUM_OBJ) { const el = $('#' + k); if (el) el.value = ''; }
+      ['#dlRelPkt','#dlRelLat','#dlRelSuc','#ulRelPkt','#ulRelLat','#ulRelSuc','#cellNcis'].forEach((id) => { $(id).value = ''; });
+    }
+
+    function fillFormFromPolicy(p) {
+      clearForm();
+      loadedExamples.clear();
+      const sid = p.scope?.sliceId || {};
+      if (sid.sst != null) $('#sst').value = sid.sst;
+      if (sid.sd != null) $('#sd').value = sid.sd;
+      if (sid.plmnId?.mcc != null) $('#mcc').value = sid.plmnId.mcc;
+      if (sid.plmnId?.mnc != null) $('#mnc').value = sid.plmnId.mnc;
+      applyObjectiveFields(p, { unload: false });
+      updateExampleCardState();
+    }
+
+    function applyObjectiveFields(p, { unload }) {
+      const obj = p.sliceSlaObjectives || {};
+      for (const k of NUM_OBJ) {
+        if (!(k in obj)) continue;
+        const el = $('#' + k);
+        if (el) el.value = unload ? '' : obj[k];
+      }
+      for (const [key, fields] of Object.entries(REL_MAP)) {
+        if (!(key in obj)) continue;
+        const src = obj[key] || {};
+        for (const [attr, sel] of Object.entries(fields)) {
+          $(sel).value = unload ? '' : (src[attr] ?? '');
+        }
+      }
+      const cells = p.sliceSlaResources?.cellIdList;
+      if (cells) {
+        $('#cellNcis').value = unload
+          ? ''
+          : cells.map((c) => c.cId?.ncI).filter((n) => n != null).join(',');
+      }
+    }
+
+    function applyExample(ex, unload) {
+      applyObjectiveFields(ex.policy || {}, { unload });
+      if (unload) loadedExamples.delete(ex.id);
+      else loadedExamples.add(ex.id);
+      setJson(buildPolicyFromForm());
+      updateExampleCardState();
+      showMsg(unload ? `Unloaded ${ex.id}` : `Added ${ex.id}`, 'ok');
+    }
+
+    function updateExampleCardState() {
+      document.querySelectorAll('#examples .card[data-id]').forEach((card) => {
+        const on = loadedExamples.has(card.dataset.id);
+        card.classList.toggle('loaded', on);
+        const addBtn = card.querySelector('.add');
+        const unloadBtn = card.querySelector('.unload');
+        if (addBtn) addBtn.disabled = on;
+        if (unloadBtn) unloadBtn.disabled = !on;
+      });
+    }
+
+    function setJson(obj) {
+      $('#policyJson').value = JSON.stringify(obj, null, 2);
+    }
+
+    function readJson() {
+      return JSON.parse($('#policyJson').value);
+    }
+
+    function sliceLabel(p) {
+      const sid = p?.scope?.sliceId || {};
+      const plmn = sid.plmnId || {};
+      return `SST ${sid.sst ?? '—'} SD ${sid.sd ?? '—'} PLMN ${plmn.mcc || ''}/${plmn.mnc || ''}`;
+    }
+
+    function objKeys(p) {
+      return Object.keys(p?.sliceSlaObjectives || {}).join(', ') || '—';
+    }
+
+    function renderExamples(list) {
+      const next = list || [];
+      const same = examplesRendered
+        && examples.length === next.length
+        && examples.every((e, i) => e.id === next[i]?.id);
+      examples = next;
+      if (same) {
+        updateExampleCardState();
+        return;
+      }
+      examplesRendered = true;
+      const el = $('#examples');
+      el.innerHTML = '';
+      for (const ex of examples) {
+        const card = document.createElement('div');
+        card.className = 'card';
+        card.dataset.id = ex.id;
+        card.innerHTML = `<h3>${ex.name}</h3><p>${ex.description || ''}</p>
+          <div class="row-actions">
+            <button type="button" class="add">Add</button>
+            <button type="button" class="secondary unload" disabled>Unload</button>
+          </div>`;
+        card.querySelector('.add').addEventListener('click', () => applyExample(ex, false));
+        card.querySelector('.unload').addEventListener('click', () => applyExample(ex, true));
+        el.appendChild(card);
+      }
+      updateExampleCardState();
+    }
+
+    function renderXappSla(bundle) {
+      const tb = $('#xappSlaBody');
+      const policies = bundle?.policies || [];
+      if (!policies.length) {
+        tb.innerHTML = '<tr><td colspan="3">None on xApp yet (is nws-xapp-slice-monitor up?)</td></tr>';
+        return;
+      }
+      tb.innerHTML = policies.map((r) => `
+        <tr>
+          <td><code>${r.key || ''}</code></td>
+          <td>${sliceLabel(r.policy)}</td>
+          <td>${objKeys(r.policy)}</td>
+        </tr>`).join('');
+    }
+
+    function renderSaved(policies) {
+      const tb = $('#savedBody');
+      if (!policies?.length) {
+        tb.innerHTML = '<tr><td colspan="4">None yet</td></tr>';
+        return;
+      }
+      tb.innerHTML = '';
+      for (const it of policies) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${it.name || ''}</td>
+          <td><code>${it.id}</code></td>
+          <td>${sliceLabel(it.policy)}</td>
+          <td class="row-actions">
+            <button type="button" class="secondary load">Load</button>
+            <button type="button" class="act">Send</button>
+            <button type="button" class="secondary del danger">Delete</button>
+          </td>`;
+        tr.querySelector('.load').addEventListener('click', () => {
+          fillFormFromPolicy(it.policy);
+          setJson(it.policy);
+        });
+        tr.querySelector('.act').addEventListener('click', () => sendPolicy(it.policy, `/api/v1/policies/${it.id}/activate`));
+        tr.querySelector('.del').addEventListener('click', () => deleteSaved(it.id));
+        tb.appendChild(tr);
+      }
+    }
+
+    function renderHistory(history) {
+      const tb = $('#histBody');
+      if (!history?.length) {
+        tb.innerHTML = '<tr><td colspan="4">Empty</td></tr>';
+        return;
+      }
+      tb.innerHTML = history.slice(0, 20).map((h) => `
+        <tr>
+          <td>${h.at || ''}</td>
+          <td>${h.source || ''}</td>
+          <td><span class="pill ${h.ok ? 'ok' : 'err'}">${h.ok ? 'ok' : 'fail'}</span></td>
+          <td>${sliceLabel(h.policy)}</td>
+        </tr>`).join('');
+    }
+
+    function renderMeta(st) {
+      const xappOk = !!(st.xapp && st.xapp.ok);
+      $('#meta').innerHTML = `
+        <span><strong>rApp:</strong> <span class="pill ok">up</span></span>
+        <span><strong>xApp:</strong> <span class="pill ${xappOk ? 'ok' : 'err'}">${xappOk ? 'reachable' : 'down'}</span></span>
+        <span><strong>Type:</strong> ${st.policy_type_id || ''}</span>
+        <span><strong>Saved:</strong> ${st.rapp?.policies ?? 0}</span>
+      `;
+    }
+
+    async function refresh() {
+      try {
+        const [st, ex, saved, hist] = await Promise.all([
+          api('/api/v1/status'),
+          api('/api/v1/examples'),
+          api('/api/v1/policies'),
+          api('/api/v1/history'),
+        ]);
+        renderMeta(st);
+        renderExamples(ex.examples || []);
+        renderXappSla(st.xapp_sla);
+        renderSaved(saved.policies || []);
+        renderHistory(hist.history || []);
+      } catch (e) {
+        showMsg(e.message, 'err');
+      }
+    }
+
+    async function sendPolicy(policy, path) {
+      try {
+        const res = await api(path, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(policy),
+        });
+        const n = res.xapp?.stored?.length ?? 1;
+        showMsg(`Sent A1 Slice SLA to xApp (${n} stored)`, 'ok');
+        await refresh();
+      } catch (e) {
+        showMsg(e.message, 'err');
+      }
+    }
+
+    async function deleteSaved(id) {
+      try {
+        await api(`/api/v1/policies/${id}`, { method: 'DELETE' });
+        showMsg(`Deleted ${id}`, 'ok');
+        await refresh();
+      } catch (e) {
+        showMsg(e.message, 'err');
+      }
+    }
+
+    $('#syncJsonBtn').addEventListener('click', () => {
+      try {
+        setJson(buildPolicyFromForm());
+        showMsg('Form copied into JSON', 'ok');
+      } catch (e) {
+        showMsg(e.message, 'err');
+      }
+    });
+    $('#validateBtn').addEventListener('click', async () => {
+      try {
+        const policy = readJson();
+        await api('/api/v1/policies/preview', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(policy),
+        });
+        showMsg('A1 policy is valid', 'ok');
+      } catch (e) {
+        showMsg(e.message, 'err');
+      }
+    });
+    $('#saveBtn').addEventListener('click', async () => {
+      try {
+        const policy = readJson();
+        const res = await api('/api/v1/policies', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(policy),
+        });
+        showMsg(`Saved on rApp as ${res.id}`, 'ok');
+        await refresh();
+      } catch (e) {
+        showMsg(e.message, 'err');
+      }
+    });
+    $('#sendBtn').addEventListener('click', async () => {
+      try {
+        const policy = readJson();
+        await sendPolicy(policy, '/api/v1/activate');
+      } catch (e) {
+        showMsg(e.message, 'err');
+      }
+    });
+    $('#refreshBtn').addEventListener('click', refresh);
+    $('#autoRefresh').addEventListener('change', () => {
+      if (timer) clearInterval(timer);
+      if ($('#autoRefresh').checked) timer = setInterval(refresh, 3000);
+    });
+
+    loadConfig().then(() => {
+      setJson(buildPolicyFromForm());
+      refresh();
+      timer = setInterval(refresh, 3000);
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,250 @@
+{
+  "tstamp": 1788420419606136,
+  "ns_policy": [
+    {
+      "sst": 1,
+      "sd": "0xffffff",
+      "direction": "dl",
+      "dedicated": 0.0,
+      "min": 0.0,
+      "max": 100.0
+    },
+    {
+      "sst": 1,
+      "sd": "0x000001",
+      "direction": "dl",
+      "dedicated": 0.0,
+      "min": 0.0,
+      "max": 100.0
+    },
+    {
+      "sst": 1,
+      "sd": "0x000002",
+      "direction": "dl",
+      "dedicated": 0.0,
+      "min": 0.0,
+      "max": 100.0
+    },
+    {
+      "sst": 1,
+      "sd": "0x000003",
+      "direction": "dl",
+      "dedicated": 0.0,
+      "min": 0.0,
+      "max": 100.0
+    },
+    {
+      "sst": 1,
+      "sd": "0x000004",
+      "direction": "dl",
+      "dedicated": 0.0,
+      "min": 0.0,
+      "max": 100.0
+    },
+    {
+      "sst": 1,
+      "sd": "0x000005",
+      "direction": "dl",
+      "dedicated": 0.0,
+      "min": 0.0,
+      "max": 100.0
+    },
+    {
+      "sst": 1,
+      "sd": "0xffffff",
+      "direction": "ul",
+      "dedicated": 0.0,
+      "min": 0.0,
+      "max": 100.0
+    },
+    {
+      "sst": 1,
+      "sd": "0x000001",
+      "direction": "ul",
+      "dedicated": 0.0,
+      "min": 0.0,
+      "max": 100.0
+    },
+    {
+      "sst": 1,
+      "sd": "0x000002",
+      "direction": "ul",
+      "dedicated": 0.0,
+      "min": 0.0,
+      "max": 100.0
+    },
+    {
+      "sst": 1,
+      "sd": "0x000003",
+      "direction": "ul",
+      "dedicated": 0.0,
+      "min": 0.0,
+      "max": 100.0
+    },
+    {
+      "sst": 1,
+      "sd": "0x000004",
+      "direction": "ul",
+      "dedicated": 0.0,
+      "min": 0.0,
+      "max": 100.0
+    },
+    {
+      "sst": 1,
+      "sd": "0x000005",
+      "direction": "ul",
+      "dedicated": 0.0,
+      "min": 0.0,
+      "max": 100.0
+    }
+  ],
+  "slices": [
+    {
+      "sst": 1,
+      "sd": "0xffffff",
+      "direction": "dl",
+      "dedicated": 0.0,
+      "min": 0.0,
+      "max": 100.0
+    },
+    {
+      "sst": 1,
+      "sd": "0x000001",
+      "direction": "dl",
+      "dedicated": 0.0,
+      "min": 0.0,
+      "max": 100.0
+    },
+    {
+      "sst": 1,
+      "sd": "0x000002",
+      "direction": "dl",
+      "dedicated": 0.0,
+      "min": 0.0,
+      "max": 100.0
+    },
+    {
+      "sst": 1,
+      "sd": "0x000003",
+      "direction": "dl",
+      "dedicated": 0.0,
+      "min": 0.0,
+      "max": 100.0
+    },
+    {
+      "sst": 1,
+      "sd": "0x000004",
+      "direction": "dl",
+      "dedicated": 0.0,
+      "min": 0.0,
+      "max": 100.0
+    },
+    {
+      "sst": 1,
+      "sd": "0x000005",
+      "direction": "dl",
+      "dedicated": 0.0,
+      "min": 0.0,
+      "max": 100.0
+    },
+    {
+      "sst": 1,
+      "sd": "0xffffff",
+      "direction": "ul",
+      "dedicated": 0.0,
+      "min": 0.0,
+      "max": 100.0
+    },
+    {
+      "sst": 1,
+      "sd": "0x000001",
+      "direction": "ul",
+      "dedicated": 0.0,
+      "min": 0.0,
+      "max": 100.0
+    },
+    {
+      "sst": 1,
+      "sd": "0x000002",
+      "direction": "ul",
+      "dedicated": 0.0,
+      "min": 0.0,
+      "max": 100.0
+    },
+    {
+      "sst": 1,
+      "sd": "0x000003",
+      "direction": "ul",
+      "dedicated": 0.0,
+      "min": 0.0,
+      "max": 100.0
+    },
+    {
+      "sst": 1,
+      "sd": "0x000004",
+      "direction": "ul",
+      "dedicated": 0.0,
+      "min": 0.0,
+      "max": 100.0
+    },
+    {
+      "sst": 1,
+      "sd": "0x000005",
+      "direction": "ul",
+      "dedicated": 0.0,
+      "min": 0.0,
+      "max": 100.0
+    }
+  ],
+  "flexric": {
+    "RAN": {
+      "dl": {
+        "num_of_slices": 0,
+        "ue_sched_algo": "MY SLICE",
+        "slice_sched_algo": "null",
+        "slices": []
+      }
+    },
+    "UE": {
+      "num_of_ues": 9,
+      "ues": [
+        {
+          "rnti": "0x170",
+          "assoc_dl_slice_id": "null"
+        },
+        {
+          "rnti": "0x12e",
+          "assoc_dl_slice_id": "null"
+        },
+        {
+          "rnti": "0x0",
+          "assoc_dl_slice_id": "null"
+        },
+        {
+          "rnti": "0x153",
+          "assoc_dl_slice_id": "null"
+        },
+        {
+          "rnti": "0x35c",
+          "assoc_dl_slice_id": "null"
+        },
+        {
+          "rnti": "0x2c6",
+          "assoc_dl_slice_id": "null"
+        },
+        {
+          "rnti": "0xe7",
+          "assoc_dl_slice_id": "null"
+        },
+        {
+          "rnti": "0x319",
+          "assoc_dl_slice_id": "null"
+        },
+        {
+          "rnti": "0x342",
+          "assoc_dl_slice_id": "null"
+        }
+      ]
+    }
+  }
+}

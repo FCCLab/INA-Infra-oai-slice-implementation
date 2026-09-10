@@ -1,5 +1,5 @@
 #!/bin/bash
-# Package nws-xapp:latest (FlexRIC Python slice xApp + REST :18080).
+# Package nws-xapp:latest (FlexRIC Python slice xApp + REST :18080 + console :18081).
 #
 # Requires oai-flexric:latest built with -DXAPP_MULTILANGUAGE=ON so
 # /usr/local/flexric/xApp/python3/xapp_sdk.py exists.
@@ -7,7 +7,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKSPACE_DIR="$(cd "${SCRIPT_DIR}/../../" && pwd)"
-XAPP_DIR="${WORKSPACE_DIR}/nws/scripts/xapp"
+XAPP_DIR="${WORKSPACE_DIR}/nws/app_xapp"
 FLEXRIC_BUILD_SH="${SCRIPT_DIR}/build_oai_flexric.sh"
 
 FLEXRIC_IMAGE="${FLEXRIC_IMAGE:-oai-flexric:latest}"
@@ -24,12 +24,11 @@ usage() {
     cat <<EOF
 Usage: $0 [OPTIONS]
 
-Build ${XAPP_IMAGE} from nws/scripts/xapp (FROM ${FLEXRIC_IMAGE}).
+Build ${XAPP_IMAGE} from nws/app_xapp (FROM ${FLEXRIC_IMAGE}).
 
 Does not restart L1/gNB. After a successful build:
 
-  docker compose -f oai-nvidia/sa_gnb_aerial/dgx2/dgx2_sera42/docker-compose.local_open5gs.5slices.e2ap.yaml \\
-    up -d --no-deps nws-xapp-slice-monitor
+  docker compose -f nws/app_xapp/docker-compose.yml up -d --no-deps nws-xapp-slice-monitor
 
 Options:
   --with-flexric   Run build_oai_flexric.sh first (needed if xapp_sdk.py is missing)

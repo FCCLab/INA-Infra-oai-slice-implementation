@@ -11,6 +11,9 @@ can keep working while the indication subscription freezes). Optional watchdog
 (--resubscribe-stale) re-subscribes when indications go stale; off by default
 because SUBSCRIPTION_DELETE can crash nearRT-RIC when E2 state is inconsistent.
 
+Backend REST (Swagger) and the frontend console run in the same image on
+different ports (API 18080, UI 18081).
+
 Examples:
   python3 xapp_slice.py --print --api-port 18080
   curl -s http://192.168.201.143:18080/api/v1/slices | jq .
@@ -34,12 +37,12 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Optional
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
-SCRIPT_DIR = Path(__file__).resolve().parent
-GUI_HTML_PATH = SCRIPT_DIR / "slice_gui.html"
-# scripts/xapp -> nws
-NWS_DIR = SCRIPT_DIR.parent.parent if (SCRIPT_DIR.parent.name == "scripts") else SCRIPT_DIR.parent
+BACKEND_DIR = Path(__file__).resolve().parent
+APP_DIR = BACKEND_DIR.parent
+# nws/app_xapp/backend -> nws
+NWS_DIR = APP_DIR.parent if APP_DIR.name == "app_xapp" else BACKEND_DIR.parent
 DEFAULT_CONF = Path(
     os.environ.get(
         "FLEXRIC_CONF",
@@ -52,6 +55,9 @@ DEFAULT_CONF = Path(
 )
 DEFAULT_OUT = Path(os.environ.get("NWS_XAPP_OUT", "rt_slice_stats.json"))
 DEFAULT_NS_OUT = Path(os.environ.get("NWS_XAPP_NS_OUT", "rt_ns_slice_policy.json"))
+DEFAULT_SLA_OUT = Path(
+    os.environ.get("NWS_XAPP_SLA_OUT", str(APP_DIR / "out" / "rt_a1_slice_sla.json"))
+)
 DEFAULT_DOCKER_IMAGE = os.environ.get("NWS_FLEXRIC_IMAGE", "oai-flexric:latest")
 DEFAULT_DOCKER_NET = os.environ.get("NWS_FLEXRIC_NET", "nws-oai-rf-sim")
 IN_DOCKER = os.environ.get("NWS_XAPP_IN_DOCKER") == "1"
@@ -60,6 +66,7 @@ INTERVAL_CHOICES = ("1", "2", "5", "10", "100", "1000")
 DEFAULT_INTERVAL = "10"
 DEFAULT_API_HOST = os.environ.get("NWS_XAPP_API_HOST", "0.0.0.0")
 DEFAULT_API_PORT = int(os.environ.get("NWS_XAPP_API_PORT", "18080"))
+DEFAULT_UI_PORT = int(os.environ.get("NWS_XAPP_UI_PORT", "18081"))
 NS_DEFAULT_SD = 0xFFFFFF
 
 
@@ -128,6 +135,22 @@ def resolve_api_port_from_argv(argv: list[str], default: int = DEFAULT_API_PORT)
             return int(a.split("=", 1)[1]), True
         i += 1
     return default, False
+
+
+def _strip_flag_with_value(argv: list[str], flag: str) -> list[str]:
+    out: list[str] = []
+    skip_next = False
+    for a in argv:
+        if skip_next:
+            skip_next = False
+            continue
+        if a == flag:
+            skip_next = True
+            continue
+        if a.startswith(f"{flag}="):
+            continue
+        out.append(a)
+    return out
 
 
 def is_port_available(port: int, host: str = "0.0.0.0") -> bool:
@@ -249,7 +272,7 @@ def reexec_via_docker(argv: list[str], *, conf: Path, image: str, network: str) 
         forwarded.append(a)
         i += 1
 
-    out_host = SCRIPT_DIR / "out"
+    out_host = APP_DIR / "out"
     out_host.mkdir(parents=True, exist_ok=True)
     api_port, explicit = resolve_api_port_from_argv(argv)
     if not explicit:
@@ -257,7 +280,7 @@ def reexec_via_docker(argv: list[str], *, conf: Path, image: str, network: str) 
         if available != api_port:
             print(f"Port {api_port} in use — REST API will use {available}")
             api_port = available
-    forwarded = strip_api_port_args(forwarded)
+    forwarded = _strip_flag_with_value(forwarded, "--api-port")
     ric_container = os.environ.get("NWS_NEAR_RIC_CONTAINER", "nws-nearRT-RIC")
     wait_e2 = parse_wait_e2_from_argv(argv)
     if not wait_ric_e2_before_xapp_init(timeout_s=wait_e2, ric_container=ric_container):
@@ -289,9 +312,9 @@ def reexec_via_docker(argv: list[str], *, conf: Path, image: str, network: str) 
         "-e",
         "FLEXRIC_CONF=/usr/local/etc/flexric/flexric.conf",
         "-v",
-        f"{script}:/xapp/xapp_slice.py:ro",
+        f"{script}:/xapp/backend/xapp_slice.py:ro",
         "-v",
-        f"{GUI_HTML_PATH}:/xapp/slice_gui.html:ro",
+        f"{APP_DIR / 'frontend'}:/xapp/frontend:ro",
         "-v",
         f"{conf}:/usr/local/etc/flexric/flexric.conf:ro",
         "-v",
@@ -300,7 +323,7 @@ def reexec_via_docker(argv: list[str], *, conf: Path, image: str, network: str) 
         "/xapp",
         image,
         "python3",
-        "/xapp/xapp_slice.py",
+        "/xapp/backend/xapp_slice.py",
         "--conf",
         "/usr/local/etc/flexric/flexric.conf",
         "--out",
@@ -772,6 +795,125 @@ def parse_slices_body(body: Any) -> list[dict[str, Any]]:
     raise ValueError("body must be a list of slices, {\"slices\":[...]}, or one slice object")
 
 
+def _a1_slice_key(policy: dict[str, Any]) -> str:
+    sid = policy["scope"]["sliceId"]
+    plmn = sid.get("plmnId") or {}
+    return f"{plmn.get('mcc','')}-{plmn.get('mnc','')}-{sid.get('sst')}-{sid.get('sd','')}"
+
+
+def parse_a1_sla_body(body: Any) -> list[dict[str, Any]]:
+    """Accept one A1 Slice SLA object, {policy:...}, or {policies:[...]}."""
+    if not isinstance(body, dict):
+        raise ValueError("A1 Slice SLA body must be a JSON object")
+    if "policies" in body:
+        items = body["policies"]
+        if not isinstance(items, list) or not items:
+            raise ValueError("'policies' must be a non-empty list")
+        return [parse_a1_sla_one(p) for p in items]
+    if "policy" in body and isinstance(body["policy"], dict):
+        return [parse_a1_sla_one(body["policy"])]
+    return [parse_a1_sla_one(body)]
+
+
+def parse_a1_sla_one(raw: Any) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        raise ValueError("each A1 policy must be an object")
+    scope = raw.get("scope")
+    if not isinstance(scope, dict) or not isinstance(scope.get("sliceId"), dict):
+        raise ValueError("scope.sliceId is required (ORAN_SliceSLATarget)")
+    sid = scope["sliceId"]
+    if "sst" not in sid:
+        raise ValueError("scope.sliceId.sst is required")
+    plmn = sid.get("plmnId")
+    if not isinstance(plmn, dict) or "mcc" not in plmn or "mnc" not in plmn:
+        raise ValueError("scope.sliceId.plmnId.{mcc,mnc} is required")
+    obj = raw.get("sliceSlaObjectives")
+    if not isinstance(obj, dict) or not obj:
+        raise ValueError("sliceSlaObjectives is required and must be non-empty")
+    policy: dict[str, Any] = {
+        "scope": {
+            "sliceId": {
+                "sst": int(sid["sst"]),
+                "plmnId": {"mcc": str(plmn["mcc"]), "mnc": str(plmn["mnc"])},
+            }
+        },
+        "sliceSlaObjectives": obj,
+    }
+    if sid.get("sd") is not None and str(sid.get("sd")).strip() != "":
+        policy["scope"]["sliceId"]["sd"] = str(sid["sd"]).strip().upper().replace("0X", "")
+    if raw.get("sliceSlaResources") is not None:
+        policy["sliceSlaResources"] = raw["sliceSlaResources"]
+    return policy
+
+
+class SlaStore:
+    """Near-RT store of O-RAN A1 Slice SLA targets received from the rApp."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.lock = threading.Lock()
+        self.by_key: dict[str, dict[str, Any]] = {}
+        self._load()
+
+    def _load(self) -> None:
+        if not self.path.is_file():
+            return
+        try:
+            loaded = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return
+        items = loaded.get("policies") if isinstance(loaded, dict) else None
+        if not isinstance(items, list):
+            return
+        for rec in items:
+            if isinstance(rec, dict) and rec.get("key"):
+                self.by_key[str(rec["key"])] = rec
+
+    def _save(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {"policies": list(self.by_key.values())}
+        tmp = self.path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        tmp.replace(self.path)
+
+    def list_policies(self) -> list[dict[str, Any]]:
+        with self.lock:
+            return json.loads(json.dumps(list(self.by_key.values())))
+
+    def put_policies(self, policies: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        now = time.time()
+        stored: list[dict[str, Any]] = []
+        with self.lock:
+            for policy in policies:
+                key = _a1_slice_key(policy)
+                rec = {
+                    "key": key,
+                    "policy_type_id": "ORAN_SliceSLATarget_3.0.0",
+                    "received_at": now,
+                    "policy": policy,
+                }
+                self.by_key[key] = rec
+                stored.append(rec)
+            self._save()
+            return json.loads(json.dumps(stored))
+
+    def delete(self, key: str) -> bool:
+        with self.lock:
+            if key not in self.by_key:
+                return False
+            del self.by_key[key]
+            self._save()
+            return True
+
+
+def get_sla_store() -> SlaStore:
+    store = getattr(SliceApiHandler, "sla_store", None)
+    if store is None:
+        store = SlaStore(DEFAULT_SLA_OUT)
+        SliceApiHandler.sla_store = store
+    return store
+
+
 class SliceController:
     # If Slice SM indications stop arriving this long, prefer last SET for merge.
     # Re-subscribe (opt-in) may call SUBSCRIPTION_DELETE and crash nearRT-RIC.
@@ -949,19 +1091,20 @@ OPENAPI_SPEC: dict[str, Any] = {
         "title": "nws NS Slice xApp API",
         "version": "1.0.0",
         "description": (
-            "Read and change OAI network-slicing PRB policy over FlexRIC E2 "
-            "Slice SM (`control_ns_slice_policy`).\n\n"
-            "Rules: `dedicated ≤ min ≤ max`, each in `[0, 100]`, "
-            "sum(dedicated) ≤ 100% and sum(min) ≤ 100% per direction, "
-            "`sd=0xffffff` cannot be SET.\n\n"
-            "E2 CONTROL ACK means the RIC got a reply. GET `/api/v1/slices` "
-            "overlays the last successful SET when Slice SM indications stall."
+            "Near-RT xApp.\n\n"
+            "- `/api/v1/a1/slice-sla`: O-RAN A1 `ORAN_SliceSLATarget` from the "
+            "rApp (throughput kbps, UE/PDU caps, delay/reliability, jitter/"
+            "priority — **not** PRB %).\n"
+            "- `/api/v1/slices`: OAI NS PRB dedicated/min/max over E2 "
+            "`control_ns_slice_policy`.\n\n"
+            "Same image: Swagger REST on 18080, console on 18081."
         ),
     },
     "servers": [{"url": "/", "description": "this xApp"}],
     "tags": [
         {"name": "health", "description": "Liveness"},
-        {"name": "slices", "description": "OAI NS PRB policy"},
+        {"name": "a1", "description": "O-RAN A1 Slice SLA (from rApp)"},
+        {"name": "slices", "description": "OAI NS PRB policy (E2)"},
     ],
     "paths": {
         "/health": {
@@ -1127,6 +1270,59 @@ OPENAPI_SPEC: dict[str, Any] = {
                 },
             },
         },
+        "/api/v1/a1/slice-sla": {
+            "get": {
+                "tags": ["a1"],
+                "summary": "A1 Slice SLA targets received from rApp",
+                "operationId": "getA1SliceSla",
+                "responses": {"200": {"description": "Stored ORAN_SliceSLATarget policies"}},
+            },
+            "put": {
+                "tags": ["a1"],
+                "summary": "PUT one or more A1 Slice SLA policies (not PRB %)",
+                "operationId": "putA1SliceSla",
+                "requestBody": {
+                    "required": True,
+                    "content": {
+                        "application/json": {
+                            "schema": {"type": "object"},
+                            "examples": {
+                                "thpt": {
+                                    "summary": "Throughput SLA",
+                                    "value": {
+                                        "scope": {
+                                            "sliceId": {
+                                                "sst": 1,
+                                                "sd": "456DEF",
+                                                "plmnId": {"mcc": "248", "mnc": "35"},
+                                            }
+                                        },
+                                        "sliceSlaObjectives": {
+                                            "guaDlThptPerSlice": 100000,
+                                            "maxDlThptPerSlice": 300000,
+                                            "maxDlThptPerUe": 50000,
+                                            "guaUlThptPerSlice": 50000,
+                                            "maxUlThptPerSlice": 150000,
+                                            "maxUlThptPerUe": 25000,
+                                        },
+                                    },
+                                }
+                            },
+                        }
+                    },
+                },
+                "responses": {
+                    "200": {"description": "Stored"},
+                    "400": {"description": "Validation"},
+                },
+            },
+            "post": {
+                "tags": ["a1"],
+                "summary": "Alias of PUT A1 Slice SLA",
+                "operationId": "postA1SliceSla",
+                "responses": {"200": {"description": "Stored"}},
+            },
+        },
         "/api/v1/last-set": {
             "get": {
                 "tags": ["slices"],
@@ -1269,6 +1465,7 @@ SWAGGER_HTML = """<!DOCTYPE html>
 
 class SliceApiHandler(BaseHTTPRequestHandler):
     controller: Optional[SliceController] = None
+    sla_store: Optional[SlaStore] = None
 
     def log_message(self, fmt: str, *args: Any) -> None:
         sys.stderr.write("%s - %s\n" % (self.address_string(), fmt % args))
@@ -1284,7 +1481,7 @@ class SliceApiHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, PUT, PATCH, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, PUT, PATCH, POST, DELETE, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
         if code != 204:
@@ -1310,9 +1507,6 @@ class SliceApiHandler(BaseHTTPRequestHandler):
         if path in ("/docs", "/swagger"):
             self._send(200, SWAGGER_HTML, content_type="text/html; charset=utf-8")
             return
-        if path in ("/gui", "/ui"):
-            self._send(200, _load_gui_html(), content_type="text/html; charset=utf-8")
-            return
         if path == "/openapi.json":
             self._send(200, OPENAPI_SPEC)
             return
@@ -1322,6 +1516,7 @@ class SliceApiHandler(BaseHTTPRequestHandler):
             return
         if path in ("/", "/health"):
             ctrl = self.controller
+            ui_port = DEFAULT_UI_PORT
             if ctrl is None:
                 self._send(
                     200,
@@ -1329,7 +1524,7 @@ class SliceApiHandler(BaseHTTPRequestHandler):
                         "status": "starting",
                         "note": "waiting for nearRT-RIC / E2",
                         "docs": "/docs",
-                        "gui": "/gui",
+                        "console": f":{ui_port}",
                         "openapi": "/openapi.json",
                     },
                 )
@@ -1344,12 +1539,23 @@ class SliceApiHandler(BaseHTTPRequestHandler):
                     "source": snap.get("source"),
                     "slices": len(snap.get("slices") or []),
                     "docs": "/docs",
-                    "gui": "/gui",
+                    "console": f":{ui_port}",
                     "openapi": "/openapi.json",
                 },
             )
             return
 
+        if path == "/api/v1/a1/slice-sla":
+            self._send(200, {"policy_type_id": "ORAN_SliceSLATarget_3.0.0", "policies": get_sla_store().list_policies()})
+            return
+        if path.startswith("/api/v1/a1/slice-sla/"):
+            key = unquote(path[len("/api/v1/a1/slice-sla/") :])
+            recs = [r for r in get_sla_store().list_policies() if r.get("key") == key]
+            if not recs:
+                self._send(404, {"error": f"no A1 SLA for key {key}"})
+                return
+            self._send(200, recs[0])
+            return
         ctrl = self.controller
         if ctrl is None:
             self._send(503, {"error": "controller not ready (waiting for nearRT-RIC / E2)", "docs": "/docs"})
@@ -1368,26 +1574,62 @@ class SliceApiHandler(BaseHTTPRequestHandler):
                 "openapi": "/openapi.json",
                 "endpoints": {
                     "GET /health": "liveness",
-                    "GET /docs": "Swagger UI",
-                    "GET /gui": "Slice policy web UI",
-                    "GET /api/v1/hosts": "Reachable API URLs on this host",
-                    "GET /openapi.json": "OpenAPI 3 JSON",
-                    "GET /api/v1/slices": "NS policy (indication + last SET overlay)",
-                    "PUT /api/v1/slices": "SET policy list via E2 control_ns_slice_policy",
-                    "PATCH /api/v1/slices": "merge one slice into current policy then SET",
-                    "POST /api/v1/slices": "alias of PUT",
+                    "GET /docs": "Swagger UI (this port)",
+                    "GET /api/v1/a1/slice-sla": "A1 Slice SLA from rApp (not PRB %)",
+                    "PUT /api/v1/a1/slice-sla": "store A1 ORAN_SliceSLATarget",
+                    "GET /api/v1/slices": "NS PRB policy (indication + last SET overlay)",
+                    "PUT /api/v1/slices": "SET PRB policy via E2 control_ns_slice_policy",
+                    "PATCH /api/v1/slices": "merge one PRB slice then SET",
                 },
+                "console": f":{DEFAULT_UI_PORT}",
             },
         )
 
     def do_PUT(self) -> None:  # noqa: N802
+        path = urlparse(self.path).path.rstrip("/") or "/"
+        if path == "/api/v1/a1/slice-sla":
+            self._handle_a1_sla()
+            return
         self._handle_set(merge=False)
 
     def do_POST(self) -> None:  # noqa: N802
+        path = urlparse(self.path).path.rstrip("/") or "/"
+        if path == "/api/v1/a1/slice-sla":
+            self._handle_a1_sla()
+            return
         self._handle_set(merge=False)
 
     def do_PATCH(self) -> None:  # noqa: N802
         self._handle_set(merge=True)
+
+    def do_DELETE(self) -> None:  # noqa: N802
+        path = urlparse(self.path).path.rstrip("/") or "/"
+        if not path.startswith("/api/v1/a1/slice-sla/"):
+            self._send(404, {"error": "not found"})
+            return
+        key = unquote(path[len("/api/v1/a1/slice-sla/") :])
+        if not get_sla_store().delete(key):
+            self._send(404, {"error": f"no A1 SLA for key {key}"})
+            return
+        self._send(200, {"ok": True, "deleted": key})
+
+    def _handle_a1_sla(self) -> None:
+        try:
+            body = self._read_json()
+            stored = get_sla_store().put_policies(parse_a1_sla_body(body))
+            self._send(
+                200,
+                {
+                    "ok": True,
+                    "policy_type_id": "ORAN_SliceSLATarget_3.0.0",
+                    "stored": stored,
+                    "note": "A1 Slice SLA stored at near-RT xApp (not PRB %)",
+                },
+            )
+        except ValueError as e:
+            self._send(400, {"error": str(e)})
+        except Exception as e:
+            self._send(500, {"error": f"{type(e).__name__}: {e}"})
 
     def _handle_set(self, *, merge: bool) -> None:
         ctrl = self.controller
@@ -1500,76 +1742,59 @@ def _collect_host_ips() -> list[dict[str, str]]:
     return rows
 
 
+def _row_urls(ip: str, api_port: int, ui_port: int, *, iface: str, kind: str) -> dict[str, str]:
+    return {
+        "ip": ip,
+        "iface": iface,
+        "kind": kind,
+        "api": f"http://{ip}:{api_port}/api/v1/slices",
+        "docs": f"http://{ip}:{api_port}/docs",
+        "console": f"http://{ip}:{ui_port}/",
+        "gui": f"http://{ip}:{ui_port}/",
+    }
+
+
 def _api_hosts_payload(port: int) -> dict[str, Any]:
+    ui_port = DEFAULT_UI_PORT
     override = (os.environ.get("NWS_XAPP_LAB_IP") or os.environ.get("NWS_XAPP_LAB_URL") or "").strip()
     if override:
+        host = override
         if override.startswith("http://") or override.startswith("https://"):
-            base = override.rstrip("/").removesuffix("/docs").removesuffix("/gui")
-        else:
-            base = f"http://{override}:{port}"
+            from urllib.parse import urlparse as _urlparse
+
+            parsed = _urlparse(override)
+            host = parsed.hostname or override
         return {
             "port": port,
+            "console_port": ui_port,
             "override": override,
-            "base_urls": [
-                {
-                    "ip": override,
-                    "iface": "env",
-                    "kind": "override",
-                    "api": f"{base}/api/v1/slices",
-                    "gui": f"{base}/gui",
-                    "docs": f"{base}/docs",
-                }
-            ],
+            "base_urls": [_row_urls(host, port, ui_port, iface="env", kind="override")],
         }
 
     rows = _collect_host_ips()
-    base_urls = [
-        {
-            "ip": row["ip"],
-            "iface": row["iface"],
-            "kind": row["kind"],
-            "api": f"http://{row['ip']}:{port}/api/v1/slices",
-            "gui": f"http://{row['ip']}:{port}/gui",
-            "docs": f"http://{row['ip']}:{port}/docs",
-        }
-        for row in rows
-    ]
+    base_urls = [_row_urls(row["ip"], port, ui_port, iface=row["iface"], kind=row["kind"]) for row in rows]
     if not base_urls:
-        base_urls = [
-            {
-                "ip": "127.0.0.1",
-                "iface": "loopback",
-                "kind": "local",
-                "api": f"http://127.0.0.1:{port}/api/v1/slices",
-                "gui": f"http://127.0.0.1:{port}/gui",
-                "docs": f"http://127.0.0.1:{port}/docs",
-            }
-        ]
-    return {"port": port, "base_urls": base_urls}
+        base_urls = [_row_urls("127.0.0.1", port, ui_port, iface="loopback", kind="local")]
+    return {"port": port, "console_port": ui_port, "base_urls": base_urls}
 
 
 def _lab_api_urls(port: int) -> list[str]:
-    """Advertise reachable LAN GUI URLs (env override or auto-detect host IPv4s)."""
+    """Advertise reachable LAN console URLs."""
     payload = _api_hosts_payload(port)
-    return [entry["gui"] for entry in payload.get("base_urls", [])]
-
-
-def _load_gui_html() -> str:
-    path = GUI_HTML_PATH if GUI_HTML_PATH.is_file() else Path("/xapp/slice_gui.html")
-    if path.is_file():
-        return path.read_text(encoding="utf-8")
-    return "<html><body><h1>slice_gui.html not found</h1></body></html>"
+    return [entry.get("console") or entry.get("gui") for entry in payload.get("base_urls", [])]
 
 
 def _print_api_urls(host: str, port: int) -> None:
+    ui_port = DEFAULT_UI_PORT
     print(f"REST API listening on http://{host}:{port}", flush=True)
-    print(f"  Slice GUI   http://{host}:{port}/gui", flush=True)
     print(f"  Swagger UI  http://{host}:{port}/docs", flush=True)
     print(f"  OpenAPI     http://{host}:{port}/openapi.json", flush=True)
+    print(f"  Console     http://{host}:{ui_port}/  (frontend, same image)", flush=True)
     if host in ("0.0.0.0", "::", ""):
         for url in _lab_api_urls(port):
-            print(f"  (lab GUI)   {url}", flush=True)
+            print(f"  (lab console) {url}", flush=True)
     print("  GET/PUT/PATCH /api/v1/slices", flush=True)
+    print("  GET/PUT       /api/v1/a1/slice-sla  (A1 SLA from rApp)", flush=True)
 
 
 def start_api_server(

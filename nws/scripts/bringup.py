@@ -44,7 +44,8 @@ BUILD_SCRIPTS_DIR = NWS_DIR / "build_scripts"
 OAI_DIR = NETWORK_SLICING_DIR / "openairinterface5g"
 CORE_COMPOSE = NWS_DIR / "5gc" / "open5gs" / "docker-compose.yml"
 CORE_COMPOSE_MULT = NWS_DIR / "5gc" / "open5gs" / "docker-compose.mult-upf.yml"
-XAPP_COMPOSE = SCRIPT_DIR / "xapp" / "docker-compose.yml"
+XAPP_COMPOSE = NWS_DIR / "app_xapp" / "docker-compose.yml"
+RAPP_COMPOSE = NWS_DIR / "app_rapp" / "docker-compose.yml"
 CORE_SERVICE = "nws-5gc"
 GNB_SERVICE = "nws-oai-gnb"
 RIC_SERVICE = "nws-nearRT-RIC"
@@ -1170,7 +1171,7 @@ def ensure_ric(
 ) -> bool:
     """
     Start nearRT-RIC before gNB so E2 setup can succeed.
-    Prefer the RAN compose service when present; otherwise scripts/xapp/docker-compose.yml.
+    Prefer the RAN compose service when present; otherwise nws/app_xapp compose.
     Uses --no-deps so RAN compose depends_on gNB does not start gNB first.
     """
     if container_running(RIC_SERVICE):
@@ -1289,15 +1290,24 @@ def bring_down(*, with_core: bool, with_ric: bool, verbose: bool) -> int:
     step.finish(True, "stopped" if not any_fail else "stopped (with warnings)")
 
     if with_ric:
-        step = next_step("Stop nearRT-RIC")
+        step = next_step("Stop nearRT-RIC / xApp / rApp")
+        ok_apps = True
         if XAPP_COMPOSE.is_file():
             ok, out = compose_down(XAPP_COMPOSE, cwd=XAPP_COMPOSE.parent, step=step)
             if not ok:
                 any_fail = True
+                ok_apps = False
                 step.write((out or "")[-400:] or "xApp compose down non-zero")
-            step.finish(True, "stopped" if ok else "stopped (with warnings)")
+        if RAPP_COMPOSE.is_file():
+            ok, out = compose_down(RAPP_COMPOSE, cwd=RAPP_COMPOSE.parent, step=step)
+            if not ok:
+                any_fail = True
+                ok_apps = False
+                step.write((out or "")[-400:] or "rApp compose down non-zero")
+        if not XAPP_COMPOSE.is_file() and not RAPP_COMPOSE.is_file():
+            step.finish(True, "no xApp/rApp compose")
         else:
-            step.finish(True, "no xApp compose")
+            step.finish(True, "stopped" if ok_apps else "stopped (with warnings)")
 
     if with_core:
         step = next_step("Stop 5GC")
