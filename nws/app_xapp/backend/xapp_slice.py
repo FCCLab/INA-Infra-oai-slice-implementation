@@ -213,18 +213,18 @@ def warn_ric_stack_conflicts(ric_container: str = "nws-nearRT-RIC") -> None:
             text=True,
             timeout=5,
         )
-    except (OSError, subprocess.SubprocessError):
-        return
-    names = {n.strip() for n in out.splitlines() if n.strip()}
-    extras = []
-    if "nearRT-RIC" in names and ric_container in names:
-        extras.append("nearRT-RIC (legacy host-network RIC — stop if using nws stack)")
-    if "xapp-python" in names:
-        extras.append("xapp-python (legacy xApp — hammers E42 setup every 5s)")
-    if len([n for n in names if "xapp" in n.lower() and n != ric_container]) > 1:
-        extras.append("multiple xApp containers — only one should connect to nws-nearRT-RIC")
-    for msg in extras:
-        print(f"WARN: {msg}", file=sys.stderr)
+        names = {n.strip() for n in out.splitlines() if n.strip()}
+        extras = []
+        if "nearRT-RIC" in names and ric_container in names:
+            extras.append("nearRT-RIC (legacy host-network RIC — stop if using nws stack)")
+        if "xapp-python" in names:
+            extras.append("xapp-python (legacy xApp — hammers E42 setup every 5s)")
+        if len([n for n in names if "xapp" in n.lower() and n != ric_container]) > 1:
+            extras.append("multiple xApp containers — only one should connect to nws-nearRT-RIC")
+        for msg in extras:
+            print(f"WARN: {msg}", file=sys.stderr)
+    except Exception as e:
+        print(f"WARN: could not check RIC stack ({e})", file=sys.stderr)
 
 
 def parse_wait_e2_from_argv(argv: list[str], default: float = 60.0) -> float:
