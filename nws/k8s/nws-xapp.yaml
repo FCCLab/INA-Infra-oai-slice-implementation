@@ -1,0 +1,73 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nws-xapp
+  namespace: ricxapp
+  labels:
+    app: nws-xapp
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nws-xapp
+  template:
+    metadata:
+      labels:
+        app: nws-xapp
+    spec:
+      containers:
+      - name: nws-xapp
+        image: python:3.11-slim
+        imagePullPolicy: IfNotPresent
+        command: ["/bin/sh", "/xapp/entrypoint.sh"]
+        env:
+        - name: NWS_XAPP_IN_DOCKER
+          value: "1"
+        - name: NWS_XAPP_API_HOST
+          value: "0.0.0.0"
+        - name: NWS_XAPP_API_PORT
+          value: "18080"
+        - name: NWS_XAPP_UI_PORT
+          value: "18081"
+        - name: NWS_A1_MEDIATOR_URL
+          value: "http://service-ricplt-a1mediator-http.ricplt:10000"
+        - name: NWS_A1_POLICY_TYPE_ID
+          value: "20008"
+        - name: NWS_A1_POLL_INTERVAL
+          value: "5.0"
+        - name: NWS_MOCK_RIC
+          value: "1"
+        ports:
+        - name: api
+          containerPort: 18080
+        - name: ui
+          containerPort: 18081
+        volumeMounts:
+        - name: app-code
+          mountPath: /xapp
+      volumes:
+      - name: app-code
+        hostPath:
+          path: /home/fcp/smo/osc-non-rt-ric/nonrtric-rapps/rapp-network-slicing/nws/app_xapp
+          type: Directory
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nws-xapp
+  namespace: ricxapp
+  labels:
+    app: nws-xapp
+spec:
+  type: NodePort
+  selector:
+    app: nws-xapp
+  ports:
+  - name: api
+    port: 18080
+    targetPort: 18080
+    nodePort: 31080
+  - name: ui
+    port: 18081
+    targetPort: 18081
+    nodePort: 31081

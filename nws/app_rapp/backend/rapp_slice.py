@@ -36,6 +36,9 @@ DEFAULT_API_HOST = os.environ.get("NWS_RAPP_API_HOST", "0.0.0.0")
 DEFAULT_API_PORT = int(os.environ.get("NWS_RAPP_API_PORT", "18090"))
 DEFAULT_UI_PORT = int(os.environ.get("NWS_RAPP_UI_PORT", "18091"))
 DEFAULT_XAPP = os.environ.get("NWS_XAPP_API_BASE", "http://127.0.0.1:18080").rstrip("/")
+DEFAULT_A1_PMS = os.environ.get("NWS_A1_PMS_BASE", "http://policymanagementservice.nonrtric:8081/a1-policy-management/v1").rstrip("/")
+DEFAULT_A1_RIC = os.environ.get("NWS_A1_RIC_ID", "nearrt-ric")
+DEFAULT_A1_TYPE_ID = os.environ.get("NWS_A1_POLICY_TYPE_ID", "20008")
 STORE_PATH = Path(os.environ.get("NWS_RAPP_STORE", str(APP_DIR / "out" / "rapp_store.json")))
 NS_DEFAULT_SD = 0xFFFFFF
 HISTORY_MAX = 100
@@ -483,6 +486,93 @@ class XappClient:
         return body
 
 
+class A1PmsClient:
+    def __init__(self, base: str, ric_id: str = DEFAULT_A1_RIC, type_id: str = DEFAULT_A1_TYPE_ID, timeout_s: float = 10.0) -> None:
+        self.base = base.rstrip("/")
+        self.ric_id = ric_id
+        self.type_id = type_id
+        self.timeout_s = timeout_s
+
+    def _request(self, method: str, path: str, body: Any = None) -> tuple[int, Any]:
+        data = None if body is None else json.dumps(body).encode("utf-8")
+        req = Request(
+            self.base + path,
+            data=data,
+            method=method,
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+        )
+        try:
+            with urlopen(req, timeout=self.timeout_s) as resp:
+                raw = resp.read().decode("utf-8", errors="ignore")
+                parsed: Any = {}
+                if raw.strip():
+                    try:
+                        parsed = json.loads(raw)
+                    except json.JSONDecodeError:
+                        parsed = {"raw": raw}
+                return int(resp.status), parsed
+        except HTTPError as e:
+            raw = e.read().decode("utf-8", errors="ignore") if e.fp else ""
+            parsed = {}
+            if raw.strip():
+                try:
+                    parsed = json.loads(raw)
+                except json.JSONDecodeError:
+                    parsed = {"raw": raw}
+            return int(e.code), parsed
+        except (URLError, TimeoutError, OSError) as e:
+            raise ConnectionError(f"A1 PMS not reachable at {self.base}: {e}") from e
+
+    def health(self) -> dict[str, Any]:
+        try:
+            code, body = self._request("GET", f"/rics?policyTypeId={self.type_id}")
+            ok = 200 <= code < 300
+            return {
+                "ok": ok,
+                "status_code": code,
+                "body": body,
+                "base": self.base,
+                "ric_id": self.ric_id,
+                "type_id": self.type_id,
+            }
+        except ConnectionError as e:
+            return {
+                "ok": False,
+                "status_code": 0,
+                "error": str(e),
+                "base": self.base,
+                "ric_id": self.ric_id,
+                "type_id": self.type_id,
+            }
+
+    def get_policies(self) -> list[Any]:
+        code, body = self._request("GET", f"/policies?nearRtRicId={self.ric_id}&policyTypeId={self.type_id}")
+        if not (200 <= code < 300):
+            raise RuntimeError(f"A1 PMS GET policies HTTP {code}: {body}")
+        return body if isinstance(body, list) else []
+
+    def put_policy(self, policy_id: str, policy_object: dict[str, Any]) -> dict[str, Any]:
+        payload = {
+            "nearRtRicId": self.ric_id,
+            "policyTypeId": self.type_id,
+            "policyId": policy_id,
+            "serviceId": "nws-rapp",
+            "policyObject": policy_object,
+        }
+        code, body = self._request("POST", "/policies", payload)
+        if not (200 <= code < 300):
+            err = body.get("error") if isinstance(body, dict) else body
+            raise RuntimeError(f"A1 PMS POST policy HTTP {code}: {err}")
+        return body if isinstance(body, dict) else {"ok": True, "pms": body}
+
+    def delete_policy(self, policy_id: str) -> dict[str, Any]:
+        code, body = self._request("DELETE", f"/policies/{policy_id}")
+        if not (200 <= code < 300 or code == 404):
+            err = body.get("error") if isinstance(body, dict) else body
+            raise RuntimeError(f"A1 PMS DELETE policy HTTP {code}: {err}")
+        return {"ok": True, "status_code": code}
+
+
 def make_record(body: dict[str, Any], *, policy: dict[str, Any], existing: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     now = utc_now()
     rec_id = str(body.get("id") or (existing or {}).get("id") or uuid.uuid4())
@@ -502,9 +592,10 @@ def make_record(body: dict[str, Any], *, policy: dict[str, Any], existing: Optio
 
 
 class RappController:
-    def __init__(self, store: Store, xapp: XappClient) -> None:
+    def __init__(self, store: Store, xapp: XappClient, a1_pms: Optional[A1PmsClient] = None) -> None:
         self.store = store
         self.xapp = xapp
+        self.a1_pms = a1_pms
 
     def status(self) -> dict[str, Any]:
         xh = self.xapp.health()
@@ -514,16 +605,95 @@ class RappController:
                 xapp_sla = self.xapp.get_slice_sla()
             except Exception as e:
                 xh["sla_error"] = str(e)
+        pms_h = self.a1_pms.health() if self.a1_pms else {"ok": False, "error": "A1 PMS not configured"}
         snap = self.store.snapshot()
         return {
             "status": "ok",
             "policy_type_id": POLICY_TYPE_ID,
+            "a1_policy_type_id": self.a1_pms.type_id if self.a1_pms else DEFAULT_A1_TYPE_ID,
             "rapp": {"policies": len(snap["policies"]), "history": len(snap["history"])},
+            "a1_pms": pms_h,
             "xapp": xh,
             "xapp_sla": xapp_sla,
             "active": snap.get("active"),
             "docs": "/docs",
             "console": f":{DEFAULT_UI_PORT}",
+        }
+
+    def results(self) -> dict[str, Any]:
+        """Consolidated network slicing operational results across rApp, A1 PMS, and xApp."""
+        slices_raw: list[dict[str, Any]] = []
+        try:
+            xapp_slices = self.xapp.get_slices()
+            if isinstance(xapp_slices, dict):
+                slices_raw = xapp_slices.get("slices", [])
+        except Exception:
+            slices_raw = []
+
+        policies_raw: list[dict[str, Any]] = []
+        try:
+            xapp_sla = self.xapp.get_slice_sla()
+            if isinstance(xapp_sla, dict):
+                policies_raw = xapp_sla.get("policies", [])
+        except Exception:
+            policies_raw = []
+
+        sla_by_slice: dict[str, dict[str, Any]] = {}
+        for item in policies_raw:
+            p = item.get("policy", {}) if isinstance(item, dict) else {}
+            scope = p.get("scope", {}).get("sliceId", {})
+            sst = scope.get("sst")
+            sd = str(scope.get("sd", "")).lower().replace("0x", "")
+            if sst is not None:
+                sla_by_slice[f"{sst}-{sd}"] = p
+
+        enriched_slices: list[dict[str, Any]] = []
+        total_ded = 0.0
+        total_min = 0.0
+        for s in slices_raw:
+            sst = s.get("sst")
+            sd_norm = str(s.get("sd", "")).lower().replace("0x", "")
+            ded = float(s.get("dedicated", 0.0) or 0.0)
+            min_p = float(s.get("min", 0.0) or 0.0)
+            max_p = float(s.get("max", 100.0) or 100.0)
+            total_ded += ded
+            total_min += min_p
+
+            matched_sla = sla_by_slice.get(f"{sst}-{sd_norm}")
+            enriched_slices.append({
+                "sst": sst,
+                "sd": s.get("sd"),
+                "direction": s.get("direction", "dl"),
+                "dedicated_prb_pct": ded,
+                "min_prb_pct": min_p,
+                "max_prb_pct": max_p,
+                "a1_policy": matched_sla,
+                "has_a1_sla": matched_sla is not None,
+                "status": "active",
+            })
+
+        snap = self.store.snapshot()
+        recent = snap.get("history", [])[-10:]
+        pms_h = self.a1_pms.health() if self.a1_pms else {"ok": False}
+        xh = self.xapp.health()
+
+        return {
+            "status": "ok",
+            "timestamp": utc_now(),
+            "summary": {
+                "total_slices": len(enriched_slices),
+                "total_dedicated_prb_pct": round(total_ded, 2),
+                "total_min_prb_pct": round(total_min, 2),
+                "shared_prb_pool_pct": round(max(0.0, 100.0 - total_ded), 2),
+                "active_a1_policies": len(policies_raw),
+                "pms_connected": bool(pms_h.get("ok")),
+                "xapp_connected": bool(xh.get("ok")),
+            },
+            "slices": enriched_slices,
+            "a1_policies": policies_raw,
+            "pms": pms_h,
+            "xapp": xh,
+            "recent_enforcements": recent,
         }
 
     def preview(self, body: dict[str, Any]) -> dict[str, Any]:
@@ -555,7 +725,22 @@ class RappController:
         return self.store.upsert_policy(rec, create=existing is None)
 
     def activate_record(self, rec: dict[str, Any], *, source: str, example_id: Optional[str] = None) -> dict[str, Any]:
-        xapp_resp = self.xapp.put_slice_sla(rec["policy"])
+        pms_resp = None
+        pms_error = None
+        if self.a1_pms:
+            try:
+                pms_resp = self.a1_pms.put_policy(rec["id"], rec["policy"])
+            except Exception as e:
+                pms_error = str(e)
+
+        xapp_resp = None
+        try:
+            xapp_resp = self.xapp.put_slice_sla(rec["policy"])
+        except Exception as e:
+            if not pms_resp:
+                raise RuntimeError(f"A1 PMS error: {pms_error or 'none'}; xApp direct error: {e}")
+            xapp_resp = {"direct_xapp_skipped_or_failed": str(e)}
+
         entry = {
             "at": utc_now(),
             "ok": True,
@@ -563,6 +748,8 @@ class RappController:
             "policy_id": rec.get("id"),
             "example_id": example_id,
             "policy": rec["policy"],
+            "pms": pms_resp,
+            "pms_error": pms_error,
             "xapp": xapp_resp,
         }
         self.store.add_history(entry)
@@ -697,6 +884,7 @@ OPENAPI_SPEC: dict[str, Any] = {
     ],
     "paths": {
         "/health": {"get": {"tags": ["health"], "summary": "Health", "responses": {"200": {"description": "OK"}}}},
+        "/api/v1/results": {"get": {"tags": ["a1"], "summary": "Consolidated network slicing operational results (E2 PRB allocations + A1 SLAs)", "responses": {"200": {"description": "Results"}}}},
         "/api/v1/status": {"get": {"tags": ["health"], "summary": "rApp + xApp status", "responses": {"200": {"description": "Status"}}}},
         "/api/v1/examples": {
             "get": {
@@ -1004,6 +1192,9 @@ class RappApiHandler(BaseHTTPRequestHandler):
                     },
                 )
                 return
+            if path in ("/api/v1/results", "/api/v1/slices/results"):
+                self._send(200, self._ctrl().results())
+                return
             if path == "/api/v1/status":
                 self._send(200, self._ctrl().status())
                 return
@@ -1162,6 +1353,8 @@ def start_api(host: str, port: int, controller: RappController) -> ThreadingHTTP
     print(f"  Swagger UI  http://{host}:{port}/docs", flush=True)
     print(f"  Console     http://{host}:{DEFAULT_UI_PORT}/", flush=True)
     print(f"  xApp base   {controller.xapp.base}", flush=True)
+    if controller.a1_pms:
+        print(f"  A1 PMS base {controller.a1_pms.base} (ric: {controller.a1_pms.ric_id}, type: {controller.a1_pms.type_id})", flush=True)
     return httpd
 
 
@@ -1170,11 +1363,15 @@ def main() -> int:
     ap.add_argument("--api-host", default=DEFAULT_API_HOST)
     ap.add_argument("--api-port", type=int, default=DEFAULT_API_PORT)
     ap.add_argument("--xapp", default=DEFAULT_XAPP, help="near-RT xApp API base URL")
+    ap.add_argument("--a1-pms", default=DEFAULT_A1_PMS, help="Non-RT RIC A1 Policy Management Service base URL")
+    ap.add_argument("--a1-ric", default=DEFAULT_A1_RIC, help="Near-RT RIC identifier configured in A1 PMS")
+    ap.add_argument("--a1-type", default=DEFAULT_A1_TYPE_ID, help="A1 policy type ID (e.g. 20008)")
     ap.add_argument("--store", type=Path, default=STORE_PATH)
     args = ap.parse_args()
 
     store = Store(args.store.expanduser().resolve())
-    controller = RappController(store, XappClient(args.xapp))
+    a1_pms = A1PmsClient(args.a1_pms, ric_id=args.a1_ric, type_id=args.a1_type) if args.a1_pms else None
+    controller = RappController(store, XappClient(args.xapp), a1_pms=a1_pms)
     httpd = start_api(args.api_host, args.api_port, controller)
     try:
         while True:

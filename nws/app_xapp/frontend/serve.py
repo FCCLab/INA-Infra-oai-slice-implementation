@@ -8,7 +8,9 @@ import json
 import os
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.error import HTTPError
 from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 
 HERE = Path(__file__).resolve().parent
 DEFAULT_UI_PORT = int(os.environ.get("NWS_XAPP_UI_PORT", "18081"))
@@ -24,16 +26,60 @@ class ConsoleHandler(SimpleHTTPRequestHandler):
     def log_message(self, fmt: str, *args) -> None:
         print("[xapp-ui] " + (fmt % args), flush=True)
 
+    def _proxy(self, method: str) -> None:
+        url = f"http://127.0.0.1:{self.backend_port}{self.path}"
+        length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(length) if length > 0 else None
+        headers = {k: v for k, v in self.headers.items() if k.lower() not in ("host", "content-length")}
+        if body is not None:
+            headers["Content-Length"] = str(len(body))
+        req = Request(url, data=body, method=method, headers=headers)
+        try:
+            with urlopen(req, timeout=10.0) as resp:
+                self.send_response(resp.status)
+                for k, v in resp.headers.items():
+                    if k.lower() not in ("transfer-encoding", "content-length"):
+                        self.send_header(k, v)
+                data = resp.read()
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(data)
+        except HTTPError as e:
+            self.send_response(e.code)
+            for k, v in e.headers.items():
+                if k.lower() not in ("transfer-encoding", "content-length"):
+                    self.send_header(k, v)
+            data = e.read() if e.fp else b""
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(data)
+        except Exception as e:
+            err = json.dumps({"error": f"proxy error to backend :{self.backend_port}: {e}"}).encode("utf-8")
+            self.send_response(502)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(err)))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(err)
+
     def do_GET(self) -> None:  # noqa: N802
         path = urlparse(self.path).path
+        if path.startswith("/api/") or path.startswith("/docs") or path == "/openapi.json":
+            self._proxy("GET")
+            return
         if path in ("/config.json", "/api/config"):
-            host = (self.headers.get("Host") or "127.0.0.1").split(":")[0]
+            host_header = self.headers.get("Host") or "127.0.0.1"
+            host = host_header.split(":")[0]
+            req_port = int(host_header.split(":")[1]) if ":" in host_header else 80
+            api_port = req_port - 1 if req_port in (31091, 31081, 18091, 18081) else self.backend_port
             body = {
                 "app": "xapp",
-                "backend_port": self.backend_port,
-                "api_base": f"http://{host}:{self.backend_port}",
-                "docs": f"http://{host}:{self.backend_port}/docs",
-                "health": f"http://{host}:{self.backend_port}/health",
+                "backend_port": api_port,
+                "api_base": "",
+                "docs": f"http://{host}:{api_port}/docs",
+                "health": f"http://{host}:{api_port}/health",
             }
             raw = json.dumps(body, indent=2).encode("utf-8") + b"\n"
             self.send_response(200)
@@ -46,6 +92,18 @@ class ConsoleHandler(SimpleHTTPRequestHandler):
         if path in ("/", "/index.html", "/gui", "/ui", "/console"):
             self.path = "/index.html"
         return SimpleHTTPRequestHandler.do_GET(self)
+
+    def do_POST(self) -> None:  # noqa: N802
+        self._proxy("POST")
+
+    def do_PUT(self) -> None:  # noqa: N802
+        self._proxy("PUT")
+
+    def do_DELETE(self) -> None:  # noqa: N802
+        self._proxy("DELETE")
+
+    def do_PATCH(self) -> None:  # noqa: N802
+        self._proxy("PATCH")
 
 
 def main() -> int:

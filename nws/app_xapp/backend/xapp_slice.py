@@ -37,7 +37,9 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Optional
+from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, unquote, urlparse
+from urllib.request import Request, urlopen
 
 BACKEND_DIR = Path(__file__).resolve().parent
 APP_DIR = BACKEND_DIR.parent
@@ -67,6 +69,9 @@ DEFAULT_INTERVAL = "10"
 DEFAULT_API_HOST = os.environ.get("NWS_XAPP_API_HOST", "0.0.0.0")
 DEFAULT_API_PORT = int(os.environ.get("NWS_XAPP_API_PORT", "18080"))
 DEFAULT_UI_PORT = int(os.environ.get("NWS_XAPP_UI_PORT", "18081"))
+DEFAULT_A1_MEDIATOR = os.environ.get("NWS_A1_MEDIATOR_URL", "http://service-ricplt-a1mediator-http.ricplt:10000").rstrip("/")
+DEFAULT_A1_TYPE_ID = os.environ.get("NWS_A1_POLICY_TYPE_ID", "20008")
+DEFAULT_A1_POLL_INTERVAL = float(os.environ.get("NWS_A1_POLL_INTERVAL", "5.0"))
 NS_DEFAULT_SD = 0xFFFFFF
 
 
@@ -109,20 +114,81 @@ def can_import_sdk() -> bool:
         return False
 
 
-def import_ric():
+class MockRic:
+    class slice_cb:
+        def __init__(self) -> None:
+            pass
+
+    class swig_ns_slice_policy_entry_t:
+        def __init__(self) -> None:
+            self.sst = 1
+            self.sd = 0
+            self.direction = 0
+            self.dedicated_pct = 0.0
+            self.min_pct = 0.0
+            self.max_pct = 100.0
+
+    class SLICE_nsPolicyVector(list):
+        def push_back(self, item: Any) -> None:
+            self.append(item)
+
+    Interval_ms_1 = 1
+    Interval_ms_2 = 2
+    Interval_ms_5 = 5
+    Interval_ms_10 = 10
+    Interval_ms_100 = 100
+    Interval_ms_1000 = 1000
+
+    def init(self) -> None:
+        pass
+
+    def init_conf(self, conf: str) -> None:
+        pass
+
+    def conn_e2_nodes(self) -> list[Any]:
+        class Plmn:
+            mcc = 1
+            mnc = 1
+
+        class NodeId:
+            plmn = Plmn()
+
+        class Node:
+            id = NodeId()
+
+        return [Node()]
+
+    def report_slice_sm(self, node_id: Any, interval: Any, cb: Any) -> int:
+        return 1
+
+    def rm_report_slice_sm(self, handler: Any) -> None:
+        pass
+
+    def control_ns_slice_policy(self, node_id: Any, vec: Any) -> bool:
+        print(f"[mock-ric] control_ns_slice_policy invoked with {len(vec)} policy entry(ies)", flush=True)
+        return True
+
+
+def import_ric(force_mock: bool = False):
+    if force_mock or os.environ.get("NWS_MOCK_RIC") == "1":
+        print("[xapp] Using MockRic (simulated E2)", flush=True)
+        return MockRic()
     sdk = resolve_sdk_path()
     if sdk is not None and str(sdk) not in sys.path:
         sys.path.insert(0, str(sdk))
     try:
         import xapp_sdk as ric  # type: ignore
+        return ric
     except ImportError as e:
+        if os.environ.get("NWS_XAPP_FALLBACK_MOCK", "1") == "1":
+            print(f"[xapp] xapp_sdk not found ({e}); falling back to MockRic", flush=True)
+            return MockRic()
         raise SystemExit(
             "Cannot import xapp_sdk.\n"
             "  Default: re-run without --host (uses oai-flexric:latest).\n"
             "  Or build FlexRIC Python bindings and source configs/flexric/flexric.connection.env\n"
             f"Import error: {e}"
         ) from e
-    return ric
 
 
 def resolve_api_port_from_argv(argv: list[str], default: int = DEFAULT_API_PORT) -> tuple[int, bool]:
@@ -357,9 +423,16 @@ def parse_sd(value: Any) -> int:
     if isinstance(value, int):
         return value
     s = str(value).strip().lower()
+    if not s:
+        return 0
     if s.startswith("0x"):
         return int(s, 16)
-    return int(s, 10)
+    try:
+        if len(s) == 6 or any(c in "abcdef" for c in s):
+            return int(s, 16)
+        return int(s, 10)
+    except ValueError:
+        return int(s, 16)
 
 
 def _dir_name(d: Any) -> str:
@@ -1080,6 +1153,183 @@ class SliceController:
         }
         return result
 
+    def results(self) -> dict[str, Any]:
+        """Consolidated network slicing operational results on Near-RT xApp."""
+        slices_info = self.get_slices()
+        slices_raw = slices_info.get("slices", [])
+
+        sla_store = get_sla_store()
+        sla_raw = sla_store.list_policies()
+
+        sla_by_slice: dict[str, dict[str, Any]] = {}
+        for item in sla_raw:
+            p = item.get("policy", {}) if isinstance(item, dict) else {}
+            scope = p.get("scope", {}).get("sliceId", {})
+            sst = scope.get("sst")
+            sd = str(scope.get("sd", "")).lower().replace("0x", "")
+            if sst is not None:
+                sla_by_slice[f"{sst}-{sd}"] = p
+
+        enriched: list[dict[str, Any]] = []
+        total_ded = 0.0
+        total_min = 0.0
+        for s in slices_raw:
+            sst = s.get("sst")
+            sd_norm = str(s.get("sd", "")).lower().replace("0x", "")
+            ded = float(s.get("dedicated", 0.0) or 0.0)
+            min_p = float(s.get("min", 0.0) or 0.0)
+            max_p = float(s.get("max", 100.0) or 100.0)
+            total_ded += ded
+            total_min += min_p
+            matched_sla = sla_by_slice.get(f"{sst}-{sd_norm}")
+            enriched.append({
+                "sst": sst,
+                "sd": s.get("sd"),
+                "direction": s.get("direction", "dl"),
+                "dedicated_prb_pct": ded,
+                "min_prb_pct": min_p,
+                "max_prb_pct": max_p,
+                "a1_policy": matched_sla,
+                "has_a1_sla": matched_sla is not None,
+                "status": "active",
+            })
+
+        return {
+            "status": "ok",
+            "timestamp": time.time(),
+            "summary": {
+                "total_slices": len(enriched),
+                "total_dedicated_prb_pct": round(total_ded, 2),
+                "total_min_prb_pct": round(total_min, 2),
+                "shared_prb_pool_pct": round(max(0.0, 100.0 - total_ded), 2),
+                "active_a1_policies": len(sla_raw),
+                "indications": slices_info.get("indications", 0),
+            },
+            "slices": enriched,
+            "a1_policies": sla_raw,
+            "last_set": self.last_set,
+        }
+
+
+class A1MediatorSyncThread(threading.Thread):
+    def __init__(
+        self,
+        mediator_url: str,
+        policy_type_id: str = DEFAULT_A1_TYPE_ID,
+        poll_interval: float = DEFAULT_A1_POLL_INTERVAL,
+        controller: Optional[SliceController] = None,
+    ) -> None:
+        super().__init__(daemon=True, name="a1-sync")
+        self.mediator_url = mediator_url.rstrip("/")
+        self.policy_type_id = policy_type_id
+        self.poll_interval = poll_interval
+        self.controller = controller
+        self.running = True
+        self.synced_instances: dict[str, str] = {}
+
+    def stop(self) -> None:
+        self.running = False
+
+    def run(self) -> None:
+        print(
+            f"[a1-sync] Polling A1 Mediator at {self.mediator_url} for policy type {self.policy_type_id} every {self.poll_interval}s",
+            flush=True,
+        )
+        while self.running:
+            try:
+                self.sync_once()
+            except Exception as e:
+                pass
+            time.sleep(self.poll_interval)
+
+    def sync_once(self) -> None:
+        url = f"{self.mediator_url}/A1-P/v2/policytypes/{self.policy_type_id}/policies"
+        req = Request(url, headers={"Accept": "application/json"})
+        try:
+            with urlopen(req, timeout=3.0) as resp:
+                if resp.status != 200:
+                    return
+                raw = resp.read().decode("utf-8", errors="ignore")
+                instance_ids = json.loads(raw) if raw.strip() else []
+        except Exception:
+            return
+
+        if not isinstance(instance_ids, list):
+            return
+
+        store = get_sla_store()
+        for pid in instance_ids:
+            try:
+                p_url = f"{self.mediator_url}/A1-P/v2/policytypes/{self.policy_type_id}/policies/{pid}"
+                p_req = Request(p_url, headers={"Accept": "application/json"})
+                with urlopen(p_req, timeout=3.0) as p_resp:
+                    if p_resp.status != 200:
+                        continue
+                    p_raw = p_resp.read().decode("utf-8", errors="ignore")
+                    policy_obj = json.loads(p_raw) if p_raw.strip() else None
+                if not policy_obj or not isinstance(policy_obj, dict):
+                    continue
+
+                raw_str = json.dumps(policy_obj, sort_keys=True)
+                is_changed = (self.synced_instances.get(pid) != raw_str)
+                if is_changed:
+                    print(f"[a1-sync] Received/updated A1 policy {pid} from A1 Mediator: {policy_obj}", flush=True)
+                    self.synced_instances[pid] = raw_str
+                    store.put_policies([policy_obj])
+
+                    if self.controller:
+                        try:
+                            apply_a1_policy_to_slice(self.controller, policy_obj)
+                        except Exception as e:
+                            print(f"[a1-sync] Failed to map SLA to E2 slice for {pid}: {e}", flush=True)
+            except Exception as e:
+                print(f"[a1-sync] Error syncing policy {pid}: {e}", flush=True)
+                continue
+
+
+def apply_a1_policy_to_slice(controller: Optional[SliceController], policy: dict[str, Any]) -> None:
+    if controller is None:
+        return
+    scope = policy.get("scope", {})
+    slice_id = scope.get("sliceId", {})
+    sst = slice_id.get("sst")
+    sd = slice_id.get("sd")
+    if sst is None or sd is None:
+        return
+    objs = policy.get("sliceSlaObjectives", {})
+    gua_dl = objs.get("guaDlThptPerSlice", 0)
+    max_dl = objs.get("maxDlThptPerSlice", 100000)
+    dedicated = float(max(5, min(50, int(gua_dl / 2000))) if gua_dl else 10)
+    max_pct = float(max(int(dedicated), min(100, int(max_dl / 1000))) if max_dl else 100)
+    min_pct = float(dedicated)
+
+    try:
+        sd_int = parse_sd(sd)
+        current = [normalize_entry(e) for e in controller._merge_base_slices()]
+        other_ded = sum(
+            e["dedicated"]
+            for e in current
+            if e["sd_int"] != sd_int and e["direction"] == "dl" and e["sd_int"] != NS_DEFAULT_SD
+        )
+        avail = max(5.0, 100.0 - other_ded)
+        if dedicated > avail:
+            print(f"[a1-mapper] Requested dedicated PRB {dedicated}% exceeds available budget ({avail:.1f}%). Clamping.", flush=True)
+            dedicated = avail
+            min_pct = min(min_pct, dedicated)
+
+        entry = {
+            "sst": int(sst),
+            "sd": str(sd),
+            "direction": "dl",
+            "dedicated": float(dedicated),
+            "min": float(min_pct),
+            "max": float(max_pct),
+        }
+        print(f"[a1-mapper] Applying SLA mapping to E2 slice: {entry}", flush=True)
+        controller.patch_slice(entry)
+    except Exception as e:
+        print(f"[a1-mapper] Error applying SLA mapping to E2 slice: {e}", flush=True)
+
 
 # ---------------------------------------------------------------------------
 # REST API (stdlib — no Flask) + Swagger UI
@@ -1560,6 +1810,9 @@ class SliceApiHandler(BaseHTTPRequestHandler):
         if ctrl is None:
             self._send(503, {"error": "controller not ready (waiting for nearRT-RIC / E2)", "docs": "/docs"})
             return
+        if path in ("/api/v1/results", "/api/v1/slices/results"):
+            self._send(200, ctrl.results())
+            return
         if path == "/api/v1/slices":
             self._send(200, ctrl.get_slices())
             return
@@ -1616,14 +1869,21 @@ class SliceApiHandler(BaseHTTPRequestHandler):
     def _handle_a1_sla(self) -> None:
         try:
             body = self._read_json()
-            stored = get_sla_store().put_policies(parse_a1_sla_body(body))
+            policies = parse_a1_sla_body(body)
+            stored = get_sla_store().put_policies(policies)
+            if self.controller:
+                for p in policies:
+                    try:
+                        apply_a1_policy_to_slice(self.controller, p)
+                    except Exception as e:
+                        print(f"[xapp-api] Failed to map A1 SLA to E2 slice: {e}", flush=True)
             self._send(
                 200,
                 {
                     "ok": True,
                     "policy_type_id": "ORAN_SliceSLATarget_3.0.0",
                     "stored": stored,
-                    "note": "A1 Slice SLA stored at near-RT xApp (not PRB %)",
+                    "note": "A1 Slice SLA stored at near-RT xApp and mapped to E2 PRB",
                 },
             )
         except ValueError as e:
@@ -1869,6 +2129,32 @@ def main() -> int:
     ap.add_argument("--host", action="store_true", help="Require local xapp_sdk")
     ap.add_argument("--docker-image", default=DEFAULT_DOCKER_IMAGE)
     ap.add_argument("--docker-net", default=DEFAULT_DOCKER_NET)
+    ap.add_argument(
+        "--a1-mediator",
+        default=DEFAULT_A1_MEDIATOR,
+        help="Near-RT RIC A1 Mediator HTTP base URL",
+    )
+    ap.add_argument(
+        "--a1-type",
+        default=DEFAULT_A1_TYPE_ID,
+        help="A1 policy type ID to poll from A1 Mediator",
+    )
+    ap.add_argument(
+        "--a1-poll-interval",
+        type=float,
+        default=DEFAULT_A1_POLL_INTERVAL,
+        help="A1 Mediator polling interval in seconds",
+    )
+    ap.add_argument(
+        "--no-a1-sync",
+        action="store_true",
+        help="Disable automatic polling of A1 Mediator",
+    )
+    ap.add_argument(
+        "--mock-ric",
+        action="store_true",
+        help="Use simulated E2 RIC interface (for testing without FlexRIC/gNB)",
+    )
     args, unknown = ap.parse_known_args()
     if unknown:
         print(f"WARN: ignoring unknown args: {unknown}", file=sys.stderr)
@@ -1877,6 +2163,7 @@ def main() -> int:
         args.resubscribe_stale = True
 
     conf = args.conf.expanduser().resolve()
+    use_mock = args.mock_ric or os.environ.get("NWS_MOCK_RIC") == "1"
 
     api_port, explicit = resolve_api_port_from_argv(sys.argv[1:])
     if not explicit and not args.no_api:
@@ -1885,7 +2172,7 @@ def main() -> int:
             print(f"Port {args.api_port} in use — REST API will use {available}")
             args.api_port = available
 
-    if not IN_DOCKER and not args.host and (args.docker or not can_import_sdk()):
+    if not use_mock and not IN_DOCKER and not args.host and (args.docker or not can_import_sdk()):
         return reexec_via_docker(
             sys.argv[1:],
             conf=conf,
@@ -1893,7 +2180,7 @@ def main() -> int:
             network=args.docker_net,
         )
 
-    if not conf.is_file():
+    if not use_mock and not conf.is_file():
         print(f"ERROR: FlexRIC conf not found: {conf}", file=sys.stderr)
         return 1
 
@@ -1923,31 +2210,31 @@ def main() -> int:
             boot_proc.join(timeout=2.0)
         boot_proc = None
 
-    ric = import_ric()
-    print(f"Using conf: {conf}")
-    ric_container = os.environ.get("NWS_NEAR_RIC_CONTAINER", "nws-nearRT-RIC")
-    if os.environ.get("NWS_XAPP_RIC_E2_READY") != "1":
-        if not wait_ric_e2_before_xapp_init(timeout_s=args.wait_e2, ric_container=ric_container):
-            print(
-                "ERROR: no gNB E2 on nearRT-RIC — xApp init would crash the RIC.\n"
-                "  1. Enable e2_agent.near_ric_ip_addr in gNB YAML "
-                f"({parse_near_ric_ip(conf)})\n"
-                f"  2. docker restart {ric_container} nws-oai-gnb\n"
-                "  3. Re-run xApp after RIC logs show 'E2 SETUP-REQUEST rx'",
-                file=sys.stderr,
-            )
-            _stop_bootstrap()
-            return 1
-    elif IN_DOCKER:
-        print("gNB E2 pre-checked on host (NWS_XAPP_RIC_E2_READY=1)", flush=True)
-    if hasattr(ric, "init_conf"):
-        ric.init_conf(str(conf))
-    else:
-        ric.init()
-        print("WARN: xapp_sdk has no init_conf(); used init()", file=sys.stderr)
+    ric = import_ric(force_mock=use_mock)
+    if not use_mock:
+        print(f"Using conf: {conf}")
+        if os.environ.get("NWS_XAPP_RIC_E2_READY") != "1":
+            if not wait_ric_e2_before_xapp_init(timeout_s=args.wait_e2, ric_container=ric_container):
+                print(
+                    "ERROR: no gNB E2 on nearRT-RIC — xApp init would crash the RIC.\n"
+                    "  1. Enable e2_agent.near_ric_ip_addr in gNB YAML "
+                    f"({parse_near_ric_ip(conf)})\n"
+                    f"  2. docker restart {ric_container} nws-oai-gnb\n"
+                    "  3. Re-run xApp after RIC logs show 'E2 SETUP-REQUEST rx'",
+                    file=sys.stderr,
+                )
+                _stop_bootstrap()
+                return 1
+        elif IN_DOCKER:
+            print("gNB E2 pre-checked on host (NWS_XAPP_RIC_E2_READY=1)", flush=True)
+        if hasattr(ric, "init_conf"):
+            ric.init_conf(str(conf))
+        else:
+            ric.init()
+            print("WARN: xapp_sdk has no init_conf(); used init()", file=sys.stderr)
 
     print(f"Waiting up to {args.wait_e2:.0f}s for E2 nodes (nearRT-RIC)...")
-    conn = wait_e2_nodes(ric, args.wait_e2)
+    conn = wait_e2_nodes(ric, 1.0 if use_mock else args.wait_e2)
     if not conn:
         print("ERROR: no E2 nodes connected to nearRT-RIC", file=sys.stderr)
         _stop_bootstrap()
@@ -1987,6 +2274,16 @@ def main() -> int:
     if not args.no_api:
         _stop_bootstrap()
         httpd = start_api_server(args.api_host, args.api_port, controller)
+
+    a1_sync: Optional[A1MediatorSyncThread] = None
+    if not args.no_a1_sync and args.a1_mediator:
+        a1_sync = A1MediatorSyncThread(
+            args.a1_mediator,
+            policy_type_id=args.a1_type,
+            poll_interval=args.a1_poll_interval,
+            controller=controller,
+        )
+        a1_sync.start()
 
     stop = {"flag": False, "sig_count": 0}
 
@@ -2047,6 +2344,8 @@ def main() -> int:
                         print("Re-subscribed Slice SM report", flush=True)
     finally:
         print(f"Stopping (indications received: {state.count})", flush=True)
+        if a1_sync is not None:
+            a1_sync.stop()
         _stop_bootstrap()
         if httpd is not None:
             httpd.shutdown()
