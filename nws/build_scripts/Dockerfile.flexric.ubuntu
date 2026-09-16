@@ -1,4 +1,4 @@
-# NWS overlay of openairinterface5g/openair2/E2AP/flexric/docker/Dockerfile.flexric.ubuntu
+# NWS overlay of oai-nvidia/openairinterface5g/openair2/E2AP/flexric/docker/Dockerfile.flexric.ubuntu
 # Keep FlexRIC sources unmodified. Build via nws/build_scripts/build_oai_flexric.sh
 # (context: openair2/E2AP/flexric).
 #

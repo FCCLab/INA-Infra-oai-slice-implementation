@@ -7,7 +7,7 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKSPACE_DIR="$(cd "${SCRIPT_DIR}/../../" && pwd)"
-OAI_DIR="${WORKSPACE_DIR}/openairinterface5g"
+OAI_DIR="${WORKSPACE_DIR}/oai-nvidia/openairinterface5g"
 LOCAL_BUILD="${OAI_DIR}/cmake_targets/ran_build/build"
 LOCAL_BIN="${LOCAL_BUILD}/nr-softmodem"
 STAGING_DIR="${SCRIPT_DIR}/staging"

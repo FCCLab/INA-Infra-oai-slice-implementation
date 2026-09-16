@@ -10,7 +10,7 @@ Monitor and update OAI **network slicing** PRB ratios (`dedicated` / `min` / `ma
 
 ### Docker `nws-nearRT-RIC`
 
-The compose file bind-mounts `openairinterface5g/`, which hides the FlexRIC build baked into the image. Before starting the stack:
+The compose file bind-mounts `oai-nvidia/openairinterface5g/`, which hides the FlexRIC build baked into the image. Before starting the stack:
 
 ```bash
 cd nws && ./build_flexric.sh
@@ -33,7 +33,7 @@ From the FlexRIC build tree (where `xapp_sdk` is on `PYTHONPATH`):
 ```bash
 cd nws
 source configs/flexric/flexric.connection.env   # NEAR_RIC_IP, FLEXRIC_CONF, PYTHONPATH
-PY=../openairinterface5g/openair2/E2AP/flexric/build/examples/xApp/python3
+PY=../oai-nvidia/openairinterface5g/openair2/E2AP/flexric/build/examples/xApp/python3
 
 # Terminal 1 — read tenant slice ratios every second
 python3 ${PY}/xapp_ns_slice_monitor.py

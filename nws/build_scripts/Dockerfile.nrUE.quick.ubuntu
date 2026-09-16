@@ -56,7 +56,7 @@ RUN apt-get update && \
 
 WORKDIR /opt/oai-nr-ue/bin
 COPY nws/build_scripts/staging/nr-uesoftmodem ./
-COPY openairinterface5g/docker/scripts/nr_ue_entrypoint.sh ./entrypoint.sh
+COPY oai-nvidia/openairinterface5g/docker/scripts/nr_ue_entrypoint.sh ./entrypoint.sh
 
 # Same .so tree as gNB quick build (must match nr-uesoftmodem + librfsimulator)
 COPY nws/build_scripts/staging/libs/*.so /usr/local/lib/
@@ -81,7 +81,7 @@ RUN /bin/bash -c "ln -s /usr/local/lib/liboai_usrpdevif.so /usr/local/lib/liboai
     ldd /opt/oai-nr-ue/bin/nr-uesoftmodem
 
 WORKDIR /opt/oai-nr-ue
-COPY openairinterface5g/common/utils/T/T_messages.txt ./
+COPY oai-nvidia/openairinterface5g/common/utils/T/T_messages.txt ./
 COPY --from=nr-ue-base /usr/local/bin/yq /usr/local/bin/yq
 COPY --from=nr-ue-base /tini /tini
 CMD ["/opt/oai-nr-ue/bin/nr-uesoftmodem"]

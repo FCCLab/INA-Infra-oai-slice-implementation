@@ -82,7 +82,7 @@ Default `./bringup.py` runs `build_ran_build.sh` + `build_oai_gnb.sh`.
 **Quick build** (after you have `ran-build:latest` once):
 
 ```bash
-cd openairinterface5g/cmake_targets/ran_build/build
+cd oai-nvidia/openairinterface5g/cmake_targets/ran_build/build
 cmake --build . --target nr-softmodem -j$(nproc)
 cd ../../../nws/build_scripts
 ./build_oai_gnb_quick.sh   # Dockerfile.gNB.quick.ubuntu + staging/nr-softmodem

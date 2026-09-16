@@ -6,7 +6,7 @@ set -e
 # Save current directory and define paths
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKSPACE_DIR="$(cd "${SCRIPT_DIR}/../../" && pwd)"
-OAI_DIR="${WORKSPACE_DIR}/openairinterface5g"
+OAI_DIR="${WORKSPACE_DIR}/oai-nvidia/openairinterface5g"
 
 # Detect architecture
 ARCH=$(uname -m)

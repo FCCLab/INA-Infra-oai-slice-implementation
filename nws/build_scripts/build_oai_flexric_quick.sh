@@ -5,7 +5,7 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKSPACE_DIR="$(cd "${SCRIPT_DIR}/../../" && pwd)"
-OAI_DIR="${WORKSPACE_DIR}/openairinterface5g"
+OAI_DIR="${WORKSPACE_DIR}/oai-nvidia/openairinterface5g"
 FLEXRIC_DIR="${OAI_DIR}/openair2/E2AP/flexric"
 BUILD_DIR="${FLEXRIC_DIR}/build"
 STAGING_DIR="${SCRIPT_DIR}/staging/flexric"

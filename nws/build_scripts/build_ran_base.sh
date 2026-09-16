@@ -4,7 +4,7 @@ set -e
 # Detect paths relative to the script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKSPACE_DIR="$(cd "${SCRIPT_DIR}/../../" && pwd)"
-OAI_DIR="${WORKSPACE_DIR}/openairinterface5g"
+OAI_DIR="${WORKSPACE_DIR}/oai-nvidia/openairinterface5g"
 
 ARCH=$(uname -m)
 if [[ "$ARCH" == "x86_64" ]]; then

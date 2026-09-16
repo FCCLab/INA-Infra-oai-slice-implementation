@@ -15,7 +15,7 @@ Ensure gNB YAML matches:
 e2_agent:
   near_ric_ip_addr: 192.168.201.142   # same as NEAR_RIC_IP
   # Must match the FlexRIC build used for OAI (not the image default).
-  sm_dir: /workspace/openairinterface5g/openair2/E2AP/flexric/build/flexric_plugins/
+  sm_dir: /workspace/oai-nvidia/openairinterface5g/openair2/E2AP/flexric/build/flexric_plugins/
 ```
 
 Using `sm_dir: /usr/local/lib/flexric/` with a host-built gNB loads stale plugins and can segfault during E2 setup.
@@ -35,7 +35,7 @@ CLEAN=1 ./build_oai.sh
 cd nws
 ./build_flexric.sh
 source configs/flexric/flexric.connection.env
-python3 ../openairinterface5g/openair2/E2AP/flexric/build/examples/xApp/python3/xapp_ns_slice_monitor.py
+python3 ../oai-nvidia/openairinterface5g/openair2/E2AP/flexric/build/examples/xApp/python3/xapp_ns_slice_monitor.py
 # SET (other terminal): xapp_ns_slice_set.py
 ```
 

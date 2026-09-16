@@ -86,7 +86,7 @@ def resolve_sdk_path() -> Optional[Path]:
     for cand in (
         Path("/usr/local/flexric/xApp/python3"),
         NWS_DIR.parent
-        / "openairinterface5g"
+        / "oai-nvidia" / "openairinterface5g"
         / "openair2"
         / "E2AP"
         / "flexric"

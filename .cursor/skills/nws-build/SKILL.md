@@ -15,7 +15,7 @@ Docker image builders for the INA-Infra-oai-slice-implementation lab. Scripts li
 
 - Docker installed and daemon running (`docker info` must succeed)
 - Source trees present:
-  - `openairinterface5g/` — RAN images
+  - `oai-nvidia/openairinterface5g/` — RAN images
   - `oai-cn5g-fed/component/oai-smf/` — SMF image (optional)
 
 ## Quick start
@@ -43,11 +43,11 @@ Always run scripts from any cwd — they resolve paths relative to `nws/build_sc
 | Script | Builds | Dockerfile | Notes |
 |--------|--------|------------|-------|
 | `build_release.sh` | All RAN images | orchestrator | Runs steps 1–6 sequentially |
-| `build_ran_base.sh` | `ran-base:latest` | `openairinterface5g/docker/Dockerfile.base.ubuntu` | Base OS/deps layer |
-| `build_ran_build.sh` | `ran-build:latest` | `openairinterface5g/docker/Dockerfile.build.ubuntu` | Compiles OAI; accepts `--no-cache` |
-| `build_oai_gnb.sh` | `oai-gnb`, `oai-cucp`, `oai-du` | `openairinterface5g/docker/Dockerfile.gNB.ubuntu` | Packages softmodem; accepts `--no-cache` |
-| `build_oai_nr_cuup.sh` | `oai-nr-cuup:latest` | `openairinterface5g/docker/Dockerfile.nr-cuup.ubuntu` | Needed for CU/DU split |
-| `build_oai_nr_ue.sh` | `oai-nr-ue:latest` | `openairinterface5g/docker/Dockerfile.nrUE.ubuntu` | UE rfsim image |
+| `build_ran_base.sh` | `ran-base:latest` | `oai-nvidia/openairinterface5g/docker/Dockerfile.base.ubuntu` | Base OS/deps layer |
+| `build_ran_build.sh` | `ran-build:latest` | `oai-nvidia/openairinterface5g/docker/Dockerfile.build.ubuntu` | Compiles OAI; accepts `--no-cache` |
+| `build_oai_gnb.sh` | `oai-gnb`, `oai-cucp`, `oai-du` | `oai-nvidia/openairinterface5g/docker/Dockerfile.gNB.ubuntu` | Packages softmodem; accepts `--no-cache` |
+| `build_oai_nr_cuup.sh` | `oai-nr-cuup:latest` | `oai-nvidia/openairinterface5g/docker/Dockerfile.nr-cuup.ubuntu` | Needed for CU/DU split |
+| `build_oai_nr_ue.sh` | `oai-nr-ue:latest` | `oai-nvidia/openairinterface5g/docker/Dockerfile.nrUE.ubuntu` | UE rfsim image |
 | `build_oai_flexric.sh` | `oai-flexric:latest` | `nws/build_scripts/Dockerfile.flexric.ubuntu` | nearRT-RIC + Python SDK (`-DXAPP_MULTILANGUAGE=ON`); context is OAI flexric sources |
 | `build_nws_xapp.sh` | `nws-xapp:latest` | `nws/app_xapp/Dockerfile` | Slice xApp REST + console; `--with-flexric` if `xapp_sdk.py` missing |
 | `build_smf.sh` | `oai-smf:$TAG` | `oai-cn5g-fed/component/oai-smf/docker/Dockerfile.smf.ubuntu` | Not in `build_release.sh` |
@@ -86,10 +86,10 @@ Every image gets `latest` plus an arch suffix (`amd64` or `arm64`):
 
 | Change | Rebuild |
 |--------|---------|
-| MAC scheduler / L2 sources (`openairinterface5g/openair2/`) | `build_ran_build.sh` + `build_oai_gnb.sh` |
+| MAC scheduler / L2 sources (`oai-nvidia/openairinterface5g/openair2/`) | `build_ran_build.sh` + `build_oai_gnb.sh` |
 | CU-UP only | `build_oai_nr_cuup.sh` |
 | UE changes | `build_oai_nr_ue.sh` |
-| FlexRIC / E2AP / slice_sm encoder | `build_oai_flexric_quick.sh` (incremental) or `build_oai_flexric.sh` (full). Do **not** edit `openairinterface5g/.../flexric/docker/Dockerfile.flexric.ubuntu`; NWS overlay is `nws/build_scripts/Dockerfile.flexric.ubuntu` (`-DXAPP_MULTILANGUAGE=ON`). |
+| FlexRIC / E2AP / slice_sm encoder | `build_oai_flexric_quick.sh` (incremental) or `build_oai_flexric.sh` (full). Do **not** edit `oai-nvidia/openairinterface5g/.../flexric/docker/Dockerfile.flexric.ubuntu`; NWS overlay is `nws/build_scripts/Dockerfile.flexric.ubuntu` (`-DXAPP_MULTILANGUAGE=ON`). |
 | SMF / DNN patches | `build_smf.sh` (bump `--tag` suffix) |
 | Fresh machine / corrupted cache | `build_release.sh` or pass `--no-cache` |
 | Docker base image / deps | start from `build_ran_base.sh` or full release |

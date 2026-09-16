@@ -1,7 +1,7 @@
 services:
     nws-nearRT-RIC:
         build:
-            context: ../../openairinterface5g/openair2/E2AP/flexric
+            context: ../../oai-nvidia/openairinterface5g/openair2/E2AP/flexric
             dockerfile: ../build_scripts/Dockerfile.flexric.ubuntu
             args:
                 BASE_IMAGE: ubuntu:noble
@@ -36,7 +36,7 @@ services:
 
     nws-oai-du:
         build:
-            context: ../../openairinterface5g
+            context: ../../oai-nvidia/openairinterface5g
             dockerfile: docker/Dockerfile.gNB.ubuntu
         image: oai-gnb:latest
         container_name: nws-oai-du
@@ -81,7 +81,7 @@ services:
 
     nws-oai-cu-cp:
         build:
-            context: ../../openairinterface5g
+            context: ../../oai-nvidia/openairinterface5g
             dockerfile: docker/Dockerfile.gNB.ubuntu
         image: oai-gnb:latest
         container_name: nws-oai-cu-cp
@@ -124,7 +124,7 @@ services:
 
     nws-oai-cu-up:
         build:
-            context: ../../openairinterface5g
+            context: ../../oai-nvidia/openairinterface5g
             dockerfile: docker/Dockerfile.nr-cuup.ubuntu
         image: oai-nr-cuup:latest
         container_name: nws-oai-cu-up
@@ -164,7 +164,7 @@ services:
 
     nws-oai-nr-ue1:
         build:
-            context: ../../openairinterface5g
+            context: ../../oai-nvidia/openairinterface5g
             dockerfile: docker/Dockerfile.nrUE.ubuntu
         image: oai-nr-ue:latest
         container_name: nws-oai-nr-ue1
@@ -197,7 +197,7 @@ services:
 
     nws-oai-nr-ue2:
         build:
-            context: ../../openairinterface5g
+            context: ../../oai-nvidia/openairinterface5g
             dockerfile: docker/Dockerfile.nrUE.ubuntu
         image: oai-nr-ue:latest
         container_name: nws-oai-nr-ue2
@@ -230,7 +230,7 @@ services:
 
     nws-oai-nr-ue3:
         build:
-            context: ../../openairinterface5g
+            context: ../../oai-nvidia/openairinterface5g
             dockerfile: docker/Dockerfile.nrUE.ubuntu
         image: oai-nr-ue:latest
         container_name: nws-oai-nr-ue3
@@ -263,7 +263,7 @@ services:
 
     nws-oai-nr-ue4:
         build:
-            context: ../../openairinterface5g
+            context: ../../oai-nvidia/openairinterface5g
             dockerfile: docker/Dockerfile.nrUE.ubuntu
         image: oai-nr-ue:latest
         container_name: nws-oai-nr-ue4
@@ -296,7 +296,7 @@ services:
 
     nws-oai-nr-ue5:
         build:
-            context: ../../openairinterface5g
+            context: ../../oai-nvidia/openairinterface5g
             dockerfile: docker/Dockerfile.nrUE.ubuntu
         image: oai-nr-ue:latest
         container_name: nws-oai-nr-ue5
