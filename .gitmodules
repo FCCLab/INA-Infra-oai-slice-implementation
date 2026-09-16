@@ -9,6 +9,7 @@
 [submodule "oai-nvidia"]
 	path = oai-nvidia
 	url = https://github.com/FCCLab/oai-nvidia
+	branch = nws-e2ap
 [submodule "nws/neuroran-ui-ux"]
 	path = nws/neuroran-ui-ux
 	url = https://github.com/NeuroRAN/neuroran-ui-ux
