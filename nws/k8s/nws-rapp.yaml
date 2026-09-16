@@ -30,11 +30,11 @@ spec:
         - name: NWS_A1_PMS_BASE
           value: "http://policymanagementservice.nonrtric:8081/a1-policy-management/v1"
         - name: NWS_A1_RIC_ID
-          value: "nearrt-ric"
+          value: "nearrt-ric-remote"
         - name: NWS_A1_POLICY_TYPE_ID
           value: "20008"
         - name: NWS_XAPP_API_BASE
-          value: "http://nws-xapp.ricxapp:18080"
+          value: "http://10.1.101.108:31080"
         ports:
         - name: api
           containerPort: 18090

@@ -1,23 +1,64 @@
-// PoliciesTab.jsx — Active & Saved A1 Policies + Activation History
+// PoliciesTab.jsx — Active A1-PMS policies + Saved library + Activation History
 // Exposes (window): PoliciesTab
 
 const { useState, useEffect, useCallback } = React;
 
+function enforcePill(status) {
+  const st = (status && (status.enforceStatus || status.status?.enforceStatus)) || "";
+  const reason = (status && (status.enforceReason || status.status?.enforceReason)) || "";
+  if (st === "ENFORCED") return { cls: "ok", text: "ENFORCED" };
+  if (st === "NOT_ENFORCED") return { cls: "warn", text: reason ? `NOT_ENFORCED (${reason})` : "NOT_ENFORCED" };
+  if (st) return { cls: "bad", text: st };
+  return { cls: "", text: "status unknown" };
+}
+
+function slaMetricBoxes(objs) {
+  if (!objs) return null;
+  const rows = [
+    ["Gua DL (kbps)", objs.guaDlThptPerSlice],
+    ["Max DL (kbps)", objs.maxDlThptPerSlice],
+    ["Gua UL (kbps)", objs.guaUlThptPerSlice],
+    ["Max UL (kbps)", objs.maxUlThptPerSlice],
+    ["Max UEs", objs.maxNumberOfUes],
+    ["Max Delay (ms)", objs.maxDlPacketDelayPerUe],
+  ];
+  const shown = rows.filter(([, v]) => v != null);
+  if (!shown.length) return null;
+  return (
+    <div className="sla-metrics">
+      {shown.map(([lbl, v]) => (
+        <div key={lbl} className="sla-metric-box">
+          <div className="sla-metric-lbl">{lbl}</div>
+          <div className="sla-metric-val">{typeof v === "number" ? Number(v).toLocaleString() : v}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function PoliciesTab({ state, colors, config, actions }) {
-  const [xappPolicies, setXappPolicies] = useState([]);
+  const [activePolicies, setActivePolicies] = useState([]);
+  const [activeMeta, setActiveMeta] = useState({ ric_id: "", policytype_id: "", error: null, ok: true });
   const [savedPolicies, setSavedPolicies] = useState([]);
   const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [deletingId, setDeletingId] = useState(null);
   const [toast, setToast] = useState(null);
 
   const fetchAll = useCallback(async () => {
     try {
-      const [resSla, resSaved, resHist] = await Promise.all([
-        fetch("/api/v1/xapp/slice-sla").then((r) => r.json()).catch(() => ({ policies: [] })),
+      const [resActive, resSaved, resHist] = await Promise.all([
+        fetch("/api/v1/a1/policies").then((r) => r.json()).catch(() => ({ policies: [], ok: false, error: "fetch failed" })),
         fetch("/api/v1/policies").then((r) => r.json()).catch(() => ({ policies: [] })),
         fetch("/api/v1/history").then((r) => r.json()).catch(() => ({ history: [] })),
       ]);
-      setXappPolicies(resSla.policies || []);
+      setActivePolicies(resActive.policies || []);
+      setActiveMeta({
+        ric_id: resActive.ric_id || "",
+        policytype_id: resActive.policytype_id || "",
+        error: resActive.error || null,
+        ok: resActive.ok !== false,
+      });
       setSavedPolicies(resSaved.policies || []);
       setHistory(resHist.history || []);
     } catch (e) {
@@ -33,7 +74,7 @@ function PoliciesTab({ state, colors, config, actions }) {
     return () => clearInterval(timer);
   }, [fetchAll]);
 
-  const handleApplySaved = async (id, policy) => {
+  const handleApplySaved = async (id) => {
     setToast({ type: "info", text: `Applying policy ${id}...` });
     try {
       const res = await fetch(`/api/v1/policies/${id}/activate`, { method: "POST" });
@@ -43,6 +84,26 @@ function PoliciesTab({ state, colors, config, actions }) {
       fetchAll();
     } catch (e) {
       setToast({ type: "err", text: e.message });
+    }
+  };
+
+  const handleDeleteActive = async (id) => {
+    if (!id) return;
+    if (!confirm(`Delete A1 policy ${id} from A1-PMS and Near-RT RIC?`)) return;
+    setDeletingId(id);
+    setToast({ type: "info", text: `Deleting ${id}...` });
+    try {
+      const res = await fetch(`/api/v1/a1/policies/${encodeURIComponent(id)}`, { method: "DELETE" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Delete failed");
+      setActivePolicies((cur) => cur.filter((p) => p.policy_id !== id));
+      const note = data.xapp_error ? ` (xApp cache: ${data.xapp_error})` : "";
+      setToast({ type: "ok", text: `Deleted ${id} from A1-PMS${note}` });
+      fetchAll();
+    } catch (e) {
+      setToast({ type: "err", text: e.message });
+    } finally {
+      setDeletingId(null);
     }
   };
 
@@ -67,74 +128,55 @@ function PoliciesTab({ state, colors, config, actions }) {
         </div>
       )}
 
-      {/* Active Policies on xApp */}
       <Card>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
-          <SectionLabel>Active A1 Slice SLA Policies on Near-RT xApp</SectionLabel>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px", gap: "12px", flexWrap: "wrap" }}>
+          <div>
+            <SectionLabel>Active A1 Policies (A1-PMS)</SectionLabel>
+            <div style={{ fontSize: "11px", color: "var(--text-faint)", marginTop: "4px" }}>
+              RIC {activeMeta.ric_id || "—"} · type {activeMeta.policytype_id || "—"} · {activePolicies.length} instance{activePolicies.length === 1 ? "" : "s"}
+            </div>
+          </div>
           <button type="button" className="btn btn-sm btn-secondary" onClick={fetchAll}>Refresh Live</button>
         </div>
 
-        {xappPolicies.length === 0 ? (
-          <p style={{ color: "var(--text-dim)", fontSize: "13px" }}>No active A1 policies recorded on Near-RT xApp.</p>
+        {activeMeta.error && (
+          <p style={{ color: "var(--bad)", fontSize: "13px" }}>A1-PMS error: {activeMeta.error}</p>
+        )}
+
+        {!loading && activePolicies.length === 0 && !activeMeta.error ? (
+          <p style={{ color: "var(--text-dim)", fontSize: "13px" }}>No A1 policies installed on this Near-RT RIC.</p>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-            {xappPolicies.map((p, idx) => {
+            {activePolicies.map((p, idx) => {
               const scope = p.policy?.scope?.sliceId || {};
               const objs = p.policy?.sliceSlaObjectives || {};
               const plmn = scope.plmnId ? `${scope.plmnId.mcc}/${scope.plmnId.mnc}` : "—";
+              const enf = enforcePill(p.status);
               return (
-                <div key={p.key || idx} className="sla-card">
+                <div key={p.policy_id || idx} className="sla-card">
                   <div className="sla-card-head">
                     <div className="sla-card-title">
-                      <span>Slice: SST {scope.sst ?? "—"} / SD {scope.sd ?? "—"}</span>
+                      <span className="mono">{p.policy_id || "—"}</span>
+                      <span>SST {scope.sst ?? "—"} / SD {scope.sd ?? "—"}</span>
                       <span className="pill ok">PLMN {plmn}</span>
-                      <span className="pill ok">A1 Target Active</span>
+                      <span className={`pill ${enf.cls}`} title={JSON.stringify(p.status || {})}>{enf.text}</span>
+                      <span className={`pill ${p.on_xapp ? "ok" : "warn"}`}>
+                        {p.on_xapp ? "on xApp" : "not on xApp"}
+                      </span>
                     </div>
-                    <span style={{ fontSize: "11px", color: "var(--text-faint)" }}>
-                      Received: {p.received_at ? new Date(p.received_at * 1000).toLocaleTimeString() : "active"}
-                    </span>
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-danger"
+                      disabled={deletingId === p.policy_id}
+                      onClick={() => handleDeleteActive(p.policy_id)}
+                    >
+                      {deletingId === p.policy_id ? "Deleting…" : "Delete"}
+                    </button>
                   </div>
-                  <div className="sla-metrics">
-                    {objs.guaDlThptPerSlice != null && (
-                      <div className="sla-metric-box">
-                        <div className="sla-metric-lbl">Gua DL (kbps)</div>
-                        <div className="sla-metric-val">{Number(objs.guaDlThptPerSlice).toLocaleString()}</div>
-                      </div>
-                    )}
-                    {objs.maxDlThptPerSlice != null && (
-                      <div className="sla-metric-box">
-                        <div className="sla-metric-lbl">Max DL (kbps)</div>
-                        <div className="sla-metric-val">{Number(objs.maxDlThptPerSlice).toLocaleString()}</div>
-                      </div>
-                    )}
-                    {objs.guaUlThptPerSlice != null && (
-                      <div className="sla-metric-box">
-                        <div className="sla-metric-lbl">Gua UL (kbps)</div>
-                        <div className="sla-metric-val">{Number(objs.guaUlThptPerSlice).toLocaleString()}</div>
-                      </div>
-                    )}
-                    {objs.maxUlThptPerSlice != null && (
-                      <div className="sla-metric-box">
-                        <div className="sla-metric-lbl">Max UL (kbps)</div>
-                        <div className="sla-metric-val">{Number(objs.maxUlThptPerSlice).toLocaleString()}</div>
-                      </div>
-                    )}
-                    {objs.maxNumberOfUes != null && (
-                      <div className="sla-metric-box">
-                        <div className="sla-metric-lbl">Max UEs</div>
-                        <div className="sla-metric-val">{objs.maxNumberOfUes}</div>
-                      </div>
-                    )}
-                    {objs.maxDlPacketDelayPerUe != null && (
-                      <div className="sla-metric-box">
-                        <div className="sla-metric-lbl">Max Delay (ms)</div>
-                        <div className="sla-metric-val">{objs.maxDlPacketDelayPerUe}</div>
-                      </div>
-                    )}
-                  </div>
+                  {slaMetricBoxes(objs)}
                   <details>
                     <summary style={{ fontSize: "11px", color: "var(--accent)", cursor: "pointer" }}>View Full Policy JSON</summary>
-                    <pre className="json-box" style={{ marginTop: "6px" }}>{JSON.stringify(p.policy, null, 2)}</pre>
+                    <pre className="json-box" style={{ marginTop: "6px" }}>{JSON.stringify({ policy_id: p.policy_id, status: p.status, policy: p.policy }, null, 2)}</pre>
                   </details>
                 </div>
               );
@@ -143,7 +185,6 @@ function PoliciesTab({ state, colors, config, actions }) {
         )}
       </Card>
 
-      {/* Saved Policies on rApp */}
       <Card>
         <SectionLabel>Saved Policies Library (Non-RT rApp Storage)</SectionLabel>
         <div className="table-wrap" style={{ marginTop: "10px" }}>
@@ -176,7 +217,7 @@ function PoliciesTab({ state, colors, config, actions }) {
                           type="button"
                           className="btn btn-sm btn-primary"
                           style={{ marginRight: "6px" }}
-                          onClick={() => handleApplySaved(sp.id, sp.policy)}
+                          onClick={() => handleApplySaved(sp.id)}
                         >
                           Apply
                         </button>
@@ -197,7 +238,6 @@ function PoliciesTab({ state, colors, config, actions }) {
         </div>
       </Card>
 
-      {/* Activation History Log */}
       <Card>
         <SectionLabel>Recent A1 Policy Activation History</SectionLabel>
         <div className="table-wrap" style={{ marginTop: "10px" }}>
@@ -205,6 +245,7 @@ function PoliciesTab({ state, colors, config, actions }) {
             <thead>
               <tr>
                 <th>Timestamp (UTC)</th>
+                <th>Policy ID</th>
                 <th>Source</th>
                 <th>Target Slice</th>
                 <th>PMS Status</th>
@@ -214,7 +255,7 @@ function PoliciesTab({ state, colors, config, actions }) {
             <tbody>
               {history.length === 0 ? (
                 <tr>
-                  <td colSpan="5" style={{ textAlign: "center", color: "var(--text-dim)", padding: "16px" }}>
+                  <td colSpan="6" style={{ textAlign: "center", color: "var(--text-dim)", padding: "16px" }}>
                     No recent activation history.
                   </td>
                 </tr>
@@ -224,17 +265,24 @@ function PoliciesTab({ state, colors, config, actions }) {
                   return (
                     <tr key={i}>
                       <td className="mono" style={{ whiteSpace: "nowrap" }}>{h.at || "—"}</td>
+                      <td className="mono" style={{ color: "var(--accent)" }}>{h.policy_id || "—"}</td>
                       <td><span className="pill">{h.source || "adhoc"}</span></td>
                       <td>SST {s.sst ?? "—"} / SD {s.sd ?? "—"}</td>
                       <td>
                         {h.pms_error ? (
                           <span className="pill bad" title={h.pms_error}>PMS Error</span>
                         ) : (
-                          <span className="pill ok">200 OK (PMS)</span>
+                          <span className="pill ok">{h.action === "delete" ? "Deleted (PMS)" : "200 OK (PMS)"}</span>
                         )}
                       </td>
                       <td>
-                        <span className="pill ok">Stored on xApp</span>
+                        {h.action === "delete" ? (
+                          <span className={`pill ${h.xapp_error ? "warn" : "ok"}`}>
+                            {h.xapp_error ? "xApp cache leftover" : "Removed on xApp"}
+                          </span>
+                        ) : (
+                          <span className="pill ok">Stored on xApp</span>
+                        )}
                       </td>
                     </tr>
                   );

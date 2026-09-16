@@ -70,6 +70,7 @@ function A1PoliciesTab({ state, colors, config }) {
                   <div className="sla-card-head">
                     <div className="sla-card-title">
                       <span>Slice: SST {sst} / SD {sd}</span>
+                      {item.policy_id && <span className="pill ok">{item.policy_id}</span>}
                       <span className="pill ok">PLMN {plmn}</span>
                       <span className="pill ok">A1 Target Active</span>
                     </div>

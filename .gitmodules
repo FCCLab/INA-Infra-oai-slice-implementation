@@ -16,3 +16,12 @@
 [submodule "nws/neuroran-ui-ux"]
 	path = nws/neuroran-ui-ux
 	url = https://github.com/NeuroRAN/neuroran-ui-ux
+[submodule "nws/app_xapp/git@github.com:NeuroRAN/xapp-network-slicing.git"]
+	path = nws/app_xapp/git@github.com:NeuroRAN/xapp-network-slicing.git
+	url = git@github.com:NeuroRAN/xapp-network-slicing.git
+[submodule "nws/app_xapp/nws/app_xapp"]
+	path = nws/app_xapp/nws/app_xapp
+	url = git@github.com:NeuroRAN/xapp-network-slicing.git
+[submodule "nws/osc-xapp-network-slicing"]
+	path = nws/osc-xapp-network-slicing
+	url = git@github.com:NeuroRAN/xapp-network-slicing.git

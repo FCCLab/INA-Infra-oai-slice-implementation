@@ -874,18 +874,34 @@ def _a1_slice_key(policy: dict[str, Any]) -> str:
     return f"{plmn.get('mcc','')}-{plmn.get('mnc','')}-{sid.get('sst')}-{sid.get('sd','')}"
 
 
-def parse_a1_sla_body(body: Any) -> list[dict[str, Any]]:
-    """Accept one A1 Slice SLA object, {policy:...}, or {policies:[...]}."""
+def _policy_id_of(raw: Any) -> Optional[str]:
+    if not isinstance(raw, dict):
+        return None
+    for key in ("id", "policy_id"):
+        val = raw.get(key)
+        if val is not None and str(val).strip():
+            return str(val).strip()
+    return None
+
+
+def parse_a1_sla_body(body: Any) -> list[tuple[Optional[str], dict[str, Any]]]:
+    """Accept one A1 Slice SLA object, {id, policy:...}, or {policies:[...]}."""
     if not isinstance(body, dict):
         raise ValueError("A1 Slice SLA body must be a JSON object")
     if "policies" in body:
         items = body["policies"]
         if not isinstance(items, list) or not items:
             raise ValueError("'policies' must be a non-empty list")
-        return [parse_a1_sla_one(p) for p in items]
+        out: list[tuple[Optional[str], dict[str, Any]]] = []
+        for item in items:
+            if isinstance(item, dict) and isinstance(item.get("policy"), dict):
+                out.append((_policy_id_of(item), parse_a1_sla_one(item["policy"])))
+            else:
+                out.append((_policy_id_of(item), parse_a1_sla_one(item)))
+        return out
     if "policy" in body and isinstance(body["policy"], dict):
-        return [parse_a1_sla_one(body["policy"])]
-    return [parse_a1_sla_one(body)]
+        return [(_policy_id_of(body), parse_a1_sla_one(body["policy"]))]
+    return [(_policy_id_of(body), parse_a1_sla_one(body))]
 
 
 def parse_a1_sla_one(raw: Any) -> dict[str, Any]:
@@ -953,14 +969,27 @@ class SlaStore:
         with self.lock:
             return json.loads(json.dumps(list(self.by_key.values())))
 
-    def put_policies(self, policies: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def put_policies(
+        self,
+        policies: list[Any],
+        policy_ids: Optional[list[Optional[str]]] = None,
+    ) -> list[dict[str, Any]]:
         now = time.time()
         stored: list[dict[str, Any]] = []
         with self.lock:
-            for policy in policies:
+            for i, item in enumerate(policies):
+                pid: Optional[str] = None
+                if isinstance(item, tuple) and len(item) == 2:
+                    pid, policy = item
+                else:
+                    policy = item
+                if policy_ids and i < len(policy_ids) and policy_ids[i]:
+                    pid = policy_ids[i]
                 key = _a1_slice_key(policy)
+                prev = self.by_key.get(key) or {}
                 rec = {
                     "key": key,
+                    "policy_id": pid or prev.get("policy_id"),
                     "policy_type_id": "ORAN_SliceSLATarget_3.0.0",
                     "received_at": now,
                     "policy": policy,
@@ -1275,7 +1304,7 @@ class A1MediatorSyncThread(threading.Thread):
                 if is_changed:
                     print(f"[a1-sync] Received/updated A1 policy {pid} from A1 Mediator: {policy_obj}", flush=True)
                     self.synced_instances[pid] = raw_str
-                    store.put_policies([policy_obj])
+                    store.put_policies([policy_obj], policy_ids=[str(pid)])
 
                     if self.controller:
                         try:
@@ -1869,12 +1898,12 @@ class SliceApiHandler(BaseHTTPRequestHandler):
     def _handle_a1_sla(self) -> None:
         try:
             body = self._read_json()
-            policies = parse_a1_sla_body(body)
-            stored = get_sla_store().put_policies(policies)
+            items = parse_a1_sla_body(body)
+            stored = get_sla_store().put_policies(items)
             if self.controller:
-                for p in policies:
+                for _pid, policy in items:
                     try:
-                        apply_a1_policy_to_slice(self.controller, p)
+                        apply_a1_policy_to_slice(self.controller, policy)
                     except Exception as e:
                         print(f"[xapp-api] Failed to map A1 SLA to E2 slice: {e}", flush=True)
             self._send(

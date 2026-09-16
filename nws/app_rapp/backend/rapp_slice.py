@@ -27,7 +27,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Optional
 from urllib.error import HTTPError, URLError
-from urllib.parse import unquote, urlparse
+from urllib.parse import quote, unquote, urlparse
 from urllib.request import Request, urlopen
 
 BACKEND_DIR = Path(__file__).resolve().parent
@@ -240,10 +240,24 @@ def validate_a1_policy(raw: Any) -> dict[str, Any]:
     return policy
 
 
+def default_policy_id(policy: dict[str, Any]) -> str:
+    """Stable A1 instance id from Open5GS S-NSSAI SD: 000001 → slice-sla-1."""
+    sid = (policy.get("scope") or {}).get("sliceId") or {}
+    sd = str(sid.get("sd") or "").strip().replace("0x", "").replace("0X", "")
+    try:
+        n = int(sd, 16)
+        if n > 0:
+            return f"slice-sla-{n}"
+    except ValueError:
+        pass
+    return str(uuid.uuid4())
+
+
 def extract_a1_policy(body: dict[str, Any]) -> dict[str, Any]:
     """Accept a raw A1 object or {policy: A1, name?, id?}."""
     if "scope" in body and "sliceSlaObjectives" in body:
-        return validate_a1_policy(body)
+        a1 = {k: body[k] for k in ("scope", "sliceSlaObjectives", "sliceSlaResources") if k in body}
+        return validate_a1_policy(a1)
     if isinstance(body.get("policy"), dict):
         return validate_a1_policy(body["policy"])
     raise ValueError("body must be an A1 Slice SLA object (scope + sliceSlaObjectives) or {policy: ...}")
@@ -398,13 +412,15 @@ class Store:
             hist = list(self.data.get("history") or [])
             hist.insert(0, entry)
             self.data["history"] = hist[:HISTORY_MAX]
-            if entry.get("ok"):
+            if entry.get("ok") and entry.get("action") != "delete":
                 self.data["active"] = {
                     "source": entry.get("source"),
                     "at": entry.get("at"),
                     "policy_id": entry.get("policy_id"),
                     "example_id": entry.get("example_id"),
                 }
+            elif entry.get("action") == "delete" and (self.data.get("active") or {}).get("policy_id") == entry.get("policy_id"):
+                self.data["active"] = None
             self._save()
 
 
@@ -476,14 +492,24 @@ class XappClient:
             return {"policies": body}
         return body
 
-    def put_slice_sla(self, policy: dict[str, Any]) -> dict[str, Any]:
-        code, body = self._request("PUT", "/api/v1/a1/slice-sla", policy)
+    def put_slice_sla(self, policy: dict[str, Any], policy_id: Optional[str] = None) -> dict[str, Any]:
+        payload: Any = {"id": policy_id, "policy": policy} if policy_id else policy
+        code, body = self._request("PUT", "/api/v1/a1/slice-sla", payload)
         if not (200 <= code < 300):
             err = body.get("error") if isinstance(body, dict) else body
             raise RuntimeError(f"xApp PUT A1 SLA HTTP {code}: {err}")
         if not isinstance(body, dict):
             return {"ok": True, "xapp": body}
         return body
+
+    def delete_slice_sla(self, key: str) -> dict[str, Any]:
+        code, body = self._request("DELETE", f"/api/v1/a1/slice-sla/{quote(key, safe='')}")
+        if code == 404:
+            return {"ok": True, "status_code": 404, "note": "not on xApp"}
+        if not (200 <= code < 300):
+            err = body.get("error") if isinstance(body, dict) else body
+            raise RuntimeError(f"xApp DELETE A1 SLA HTTP {code}: {err}")
+        return body if isinstance(body, dict) else {"ok": True, "status_code": code}
 
 
 class A1PmsClient:
@@ -492,14 +518,27 @@ class A1PmsClient:
         self.ric_id = ric_id
         self.type_id = type_id
         self.timeout_s = timeout_s
+        # Create-or-update uses A1-PMS v2 PUT (/a1-policy/v2). v1 POST returns 409
+        # when the policy id already exists and cannot update the body.
+        if "/a1-policy-management/v1" in self.base:
+            self.v2_base = self.base.replace("/a1-policy-management/v1", "/a1-policy/v2")
+        elif self.base.endswith("/a1-policy/v2"):
+            self.v2_base = self.base
+        else:
+            self.v2_base = self.base.rstrip("/") + "/a1-policy/v2"
 
-    def _request(self, method: str, path: str, body: Any = None) -> tuple[int, Any]:
+    def _request(self, method: str, path: str, body: Any = None, *, base: Optional[str] = None) -> tuple[int, Any]:
         data = None if body is None else json.dumps(body).encode("utf-8")
+        # DELETE often returns 204 with an empty body; Accept: application/json then
+        # yields HTTP 406 from A1-PMS. Prefer */* so empty success responses work.
+        headers = {"Accept": "*/*"}
+        if data is not None:
+            headers["Content-Type"] = "application/json"
         req = Request(
-            self.base + path,
+            (base or self.base) + path,
             data=data,
             method=method,
-            headers={"Content-Type": "application/json", "Accept": "application/json"},
+            headers=headers,
         )
         try:
             with urlopen(req, timeout=self.timeout_s) as resp:
@@ -551,23 +590,83 @@ class A1PmsClient:
             raise RuntimeError(f"A1 PMS GET policies HTTP {code}: {body}")
         return body if isinstance(body, list) else []
 
+    def get_policy(self, policy_id: str) -> Any:
+        code, body = self._request("GET", f"/policies/{policy_id}")
+        if not (200 <= code < 300):
+            raise RuntimeError(f"A1 PMS GET policy {policy_id} HTTP {code}: {body}")
+        return body
+
+    def get_policy_status(self, policy_id: str) -> dict[str, Any]:
+        code, body = self._request("GET", f"/policies/{policy_id}/status")
+        if not (200 <= code < 300):
+            raise RuntimeError(f"A1 PMS GET policy {policy_id} status HTTP {code}: {body}")
+        return body if isinstance(body, dict) else {"raw": body}
+
+    def list_active_policies(self) -> list[dict[str, Any]]:
+        """Live A1 instances on this RIC/type, with body + enforce status."""
+        out: list[dict[str, Any]] = []
+        for item in self.get_policies():
+            if isinstance(item, dict):
+                pid = str(item.get("policyId") or item.get("policy_id") or "")
+                ric = str(item.get("nearRtRicId") or item.get("ric_id") or self.ric_id)
+            else:
+                pid = str(item)
+                ric = self.ric_id
+            if not pid:
+                continue
+            rec: dict[str, Any] = {
+                "policy_id": pid,
+                "ric_id": ric,
+                "policytype_id": self.type_id,
+                "service_id": None,
+                "policy": None,
+                "status": {},
+            }
+            try:
+                body = self.get_policy(pid)
+                if isinstance(body, dict) and ("scope" in body or "sliceSlaObjectives" in body):
+                    rec["policy"] = body
+                    rec["service_id"] = body.get("service_id")
+                elif isinstance(body, dict) and "policy_data" in body:
+                    rec["policy"] = body.get("policy_data")
+                    rec["service_id"] = body.get("service_id")
+                    rec["ric_id"] = body.get("ric_id") or ric
+                    rec["policytype_id"] = body.get("policytype_id") or self.type_id
+                else:
+                    rec["policy"] = body
+            except Exception as e:
+                rec["policy_error"] = str(e)
+            try:
+                rec["status"] = self.get_policy_status(pid)
+            except Exception as e:
+                rec["status_error"] = str(e)
+            out.append(rec)
+        return out
+
     def put_policy(self, policy_id: str, policy_object: dict[str, Any]) -> dict[str, Any]:
+        """Create or update an A1 policy instance (idempotent).
+
+        Uses A1-PMS v2 PUT with policy_data. v1 POST only creates and returns
+        HTTP 409 when the same policy_id already exists, so Apply on an existing
+        Slice SLA would otherwise leave PMS/a1mediator unchanged.
+        """
         payload = {
-            "nearRtRicId": self.ric_id,
-            "policyTypeId": self.type_id,
-            "policyId": policy_id,
-            "serviceId": "nws-rapp",
-            "policyObject": policy_object,
+            "ric_id": self.ric_id,
+            "policy_id": policy_id,
+            "service_id": "nws-rapp",
+            "policytype_id": self.type_id,
+            "policy_data": policy_object,
         }
-        code, body = self._request("POST", "/policies", payload)
+        code, body = self._request("PUT", "/policies", payload, base=self.v2_base)
         if not (200 <= code < 300):
             err = body.get("error") if isinstance(body, dict) else body
-            raise RuntimeError(f"A1 PMS POST policy HTTP {code}: {err}")
-        return body if isinstance(body, dict) else {"ok": True, "pms": body}
+            raise RuntimeError(f"A1 PMS PUT policy HTTP {code}: {err}")
+        return body if isinstance(body, dict) else {"ok": True, "pms": body, "status_code": code}
 
     def delete_policy(self, policy_id: str) -> dict[str, Any]:
         code, body = self._request("DELETE", f"/policies/{policy_id}")
-        if not (200 <= code < 300 or code == 404):
+        # A1-PMS returns 204 No Content on success.
+        if not (200 <= code < 300 or code == 204 or code == 404):
             err = body.get("error") if isinstance(body, dict) else body
             raise RuntimeError(f"A1 PMS DELETE policy HTTP {code}: {err}")
         return {"ok": True, "status_code": code}
@@ -575,7 +674,12 @@ class A1PmsClient:
 
 def make_record(body: dict[str, Any], *, policy: dict[str, Any], existing: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     now = utc_now()
-    rec_id = str(body.get("id") or (existing or {}).get("id") or uuid.uuid4())
+    rec_id = str(
+        body.get("id")
+        or body.get("policy_id")
+        or (existing or {}).get("id")
+        or default_policy_id(policy)
+    ).strip()
     name = str(body.get("name") or (existing or {}).get("name") or "").strip()
     if not name:
         sid = policy["scope"]["sliceId"]
@@ -618,6 +722,103 @@ class RappController:
             "active": snap.get("active"),
             "docs": "/docs",
             "console": f":{DEFAULT_UI_PORT}",
+        }
+
+    def active_a1_policies(self) -> dict[str, Any]:
+        """Policies actually installed on A1-PMS for this RIC/type (not xApp leftovers)."""
+        pms_error = None
+        pms_policies: list[dict[str, Any]] = []
+        if self.a1_pms:
+            try:
+                pms_policies = self.a1_pms.list_active_policies()
+            except Exception as e:
+                pms_error = str(e)
+        else:
+            pms_error = "A1 PMS not configured"
+
+        xapp_policies: list[dict[str, Any]] = []
+        try:
+            sla = self.xapp.get_slice_sla()
+            if isinstance(sla, dict):
+                xapp_policies = list(sla.get("policies") or [])
+        except Exception:
+            xapp_policies = []
+
+        def slice_key(policy: Any) -> str:
+            if not isinstance(policy, dict):
+                return ""
+            sid = ((policy.get("scope") or {}).get("sliceId") or {})
+            plmn = sid.get("plmnId") or {}
+            sd = str(sid.get("sd") or "").upper().replace("0X", "")
+            return f"{plmn.get('mcc', '')}-{plmn.get('mnc', '')}-{sid.get('sst', '')}-{sd}"
+
+        xapp_by_key: dict[str, dict[str, Any]] = {}
+        for xp in xapp_policies:
+            if not isinstance(xp, dict):
+                continue
+            key = str(xp.get("key") or slice_key(xp.get("policy")) or "")
+            if key:
+                xapp_by_key[key] = xp
+
+        for rec in pms_policies:
+            key = slice_key(rec.get("policy"))
+            rec["slice_key"] = key
+            xp = xapp_by_key.get(key)
+            rec["on_xapp"] = xp is not None
+            if xp:
+                rec["xapp_key"] = xp.get("key")
+                rec["xapp_received_at"] = xp.get("received_at")
+
+        return {
+            "ok": pms_error is None,
+            "error": pms_error,
+            "ric_id": self.a1_pms.ric_id if self.a1_pms else None,
+            "policytype_id": self.a1_pms.type_id if self.a1_pms else DEFAULT_A1_TYPE_ID,
+            "count": len(pms_policies),
+            "policies": pms_policies,
+        }
+
+    def delete_active_policy(self, policy_id: str) -> dict[str, Any]:
+        """Remove a live A1 instance from A1-PMS (and xApp cache if present)."""
+        pid = str(policy_id or "").strip()
+        if not pid:
+            raise ValueError("policy_id is required")
+        if not self.a1_pms:
+            raise RuntimeError("A1 PMS not configured")
+
+        rec = next((p for p in self.active_a1_policies().get("policies") or [] if p.get("policy_id") == pid), None)
+        xapp_key = (rec or {}).get("xapp_key") or (rec or {}).get("slice_key")
+
+        pms = self.a1_pms.delete_policy(pid)
+
+        xapp: Any = None
+        xapp_error = None
+        if xapp_key:
+            try:
+                xapp = self.xapp.delete_slice_sla(str(xapp_key))
+            except Exception as e:
+                xapp_error = str(e)
+
+        self.store.add_history(
+            {
+                "at": utc_now(),
+                "ok": True,
+                "action": "delete",
+                "source": f"delete:{pid}",
+                "policy_id": pid,
+                "policy": (rec or {}).get("policy"),
+                "pms": pms,
+                "pms_error": None,
+                "xapp": xapp,
+                "xapp_error": xapp_error,
+            }
+        )
+        return {
+            "ok": True,
+            "deleted": pid,
+            "pms": pms,
+            "xapp": xapp,
+            "xapp_error": xapp_error,
         }
 
     def results(self) -> dict[str, Any]:
@@ -703,6 +904,10 @@ class RappController:
     def create_policy(self, body: dict[str, Any]) -> dict[str, Any]:
         policy = extract_a1_policy(body)
         rec = make_record(body, policy=policy)
+        existing = self.store.get_policy(rec["id"])
+        if existing is not None:
+            rec["created_at"] = existing.get("created_at") or rec["created_at"]
+            return self.store.upsert_policy(rec, create=False)
         return self.store.upsert_policy(rec, create=True)
 
     def update_policy(self, policy_id: str, body: dict[str, Any]) -> dict[str, Any]:
@@ -725,6 +930,10 @@ class RappController:
         return self.store.upsert_policy(rec, create=existing is None)
 
     def activate_record(self, rec: dict[str, Any], *, source: str, example_id: Optional[str] = None) -> dict[str, Any]:
+        # Keep rApp library in sync with what we push southbound.
+        existing = self.store.get_policy(str(rec.get("id") or ""))
+        self.store.upsert_policy(rec, create=existing is None)
+
         pms_resp = None
         pms_error = None
         if self.a1_pms:
@@ -734,16 +943,19 @@ class RappController:
                 pms_error = str(e)
 
         xapp_resp = None
+        xapp_error = None
         try:
-            xapp_resp = self.xapp.put_slice_sla(rec["policy"])
+            xapp_resp = self.xapp.put_slice_sla(rec["policy"], policy_id=rec.get("id"))
         except Exception as e:
+            xapp_error = str(e)
             if not pms_resp:
                 raise RuntimeError(f"A1 PMS error: {pms_error or 'none'}; xApp direct error: {e}")
             xapp_resp = {"direct_xapp_skipped_or_failed": str(e)}
 
+        ok = pms_error is None and xapp_error is None
         entry = {
             "at": utc_now(),
-            "ok": True,
+            "ok": ok,
             "source": source,
             "policy_id": rec.get("id"),
             "example_id": example_id,
@@ -751,6 +963,7 @@ class RappController:
             "pms": pms_resp,
             "pms_error": pms_error,
             "xapp": xapp_resp,
+            "xapp_error": xapp_error,
         }
         self.store.add_history(entry)
         return entry
@@ -1014,6 +1227,21 @@ OPENAPI_SPEC: dict[str, Any] = {
         "/api/v1/xapp/slices": {
             "get": {"tags": ["xapp"], "summary": "Proxy GET xApp NS policy", "responses": {"200": {"description": "Snapshot"}}}
         },
+        "/api/v1/a1/policies": {
+            "get": {
+                "tags": ["a1"],
+                "summary": "Live A1-PMS policies for the configured RIC/type (bodies + enforce status)",
+                "responses": {"200": {"description": "Active policies"}},
+            }
+        },
+        "/api/v1/a1/policies/{id}": {
+            "delete": {
+                "tags": ["a1"],
+                "summary": "Delete a live A1-PMS policy instance (propagates to Near-RT RIC)",
+                "parameters": [{"name": "id", "in": "path", "required": True, "schema": {"type": "string"}}],
+                "responses": {"200": {"description": "Deleted"}, "502": {"description": "A1-PMS error"}},
+            }
+        },
         "/api/v1/history": {"get": {"tags": ["a1"], "summary": "Activation history", "responses": {"200": {"description": "History"}}}},
         "/docs": {"get": {"tags": ["health"], "summary": "Swagger UI", "responses": {"200": {"description": "HTML"}}}},
         "/openapi.json": {"get": {"tags": ["health"], "summary": "OpenAPI JSON", "responses": {"200": {"description": "OpenAPI"}}}},
@@ -1216,6 +1444,9 @@ class RappApiHandler(BaseHTTPRequestHandler):
                     return
                 self._send(200, rec)
                 return
+            if path in ("/api/v1/a1/policies", "/api/v1/active-policies"):
+                self._send(200, self._ctrl().active_a1_policies())
+                return
             if path == "/api/v1/xapp/slice-sla":
                 self._send(200, self._ctrl().xapp.get_slice_sla())
                 return
@@ -1246,6 +1477,8 @@ class RappApiHandler(BaseHTTPRequestHandler):
                     "policy_type_id": POLICY_TYPE_ID,
                     "endpoints": {
                         "GET /api/v1/examples": "built-in A1 Slice SLA examples",
+                        "GET /api/v1/a1/policies": "live A1-PMS policies for this RIC",
+                        "DELETE /api/v1/a1/policies/{id}": "delete live A1-PMS policy instance",
                         "POST /api/v1/policies": "save A1 policy (raw or {name,policy})",
                         "POST /api/v1/policies/preview": "validate + PRB translation",
                         "POST /api/v1/policies/{id}/activate": "activate saved policy",
@@ -1330,6 +1563,13 @@ class RappApiHandler(BaseHTTPRequestHandler):
     def do_DELETE(self) -> None:  # noqa: N802
         path = urlparse(self.path).path.rstrip("/") or "/"
         try:
+            if path.startswith("/api/v1/a1/policies/"):
+                pid = unquote(path[len("/api/v1/a1/policies/") :])
+                if not pid or "/" in pid:
+                    self._send(404, {"error": "not found"})
+                    return
+                self._send(200, self._ctrl().delete_active_policy(pid))
+                return
             if path.startswith("/api/v1/policies/") or path.startswith("/api/v1/intents/"):
                 prefix = "/api/v1/policies/" if path.startswith("/api/v1/policies/") else "/api/v1/intents/"
                 pid = unquote(path[len(prefix) :])
@@ -1339,6 +1579,12 @@ class RappApiHandler(BaseHTTPRequestHandler):
                 self._send(200, {"ok": True, "deleted": pid})
                 return
             self._send(404, {"error": "not found"})
+        except ValueError as e:
+            self._send(400, {"error": str(e)})
+        except ConnectionError as e:
+            self._send(502, {"error": str(e)})
+        except RuntimeError as e:
+            self._send(502, {"error": str(e)})
         except Exception as e:
             self._send(500, {"error": f"{type(e).__name__}: {e}"})
 
