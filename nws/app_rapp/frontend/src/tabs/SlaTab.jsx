@@ -1,7 +1,7 @@
 // SlaTab.jsx — A1 Slice SLA Editor & Enforcer (NeuroRAN rApp)
 // Exposes (window): SlaTab
 
-const { useState, useEffect, useMemo, useCallback } = React;
+const { useState, useEffect, useCallback } = React;
 
 const PRESET_EXAMPLES = [
   {
@@ -56,15 +56,6 @@ function sliceSlaPolicyId(sd) {
 
 function numOrEmpty(v) {
   return v == null || v === "" ? "" : String(v);
-}
-
-function enforcePill(status) {
-  const st = (status && (status.enforceStatus || status.status?.enforceStatus)) || "";
-  const reason = (status && (status.enforceReason || status.status?.enforceReason)) || "";
-  if (st === "ENFORCED") return { cls: "ok", text: "ENFORCED" };
-  if (st === "NOT_ENFORCED") return { cls: "warn", text: reason ? `NOT_ENFORCED (${reason})` : "NOT_ENFORCED" };
-  if (st) return { cls: "bad", text: st };
-  return { cls: "", text: "—" };
 }
 
 function SlaTab({ state, colors, config, actions }) {
@@ -220,15 +211,6 @@ function SlaTab({ state, colors, config, actions }) {
     }
   }, [buildPolicy, jsonDirty]);
 
-  // Estimated PRB allocation
-  const estimatedPrb = useMemo(() => {
-    const g = Number(guaDl) || 0;
-    const m = Number(maxDl) || 0;
-    const ded = Math.min(100, Math.max(5, Math.round(g / 2000)));
-    const maxP = Math.min(100, Math.max(ded, Math.round(m / 1000)));
-    return { dedicated: ded, min: ded, max: maxP };
-  }, [guaDl, maxDl]);
-
   // Toggle Preset Example
   const handleToggleExample = (ex) => {
     const isLoaded = activeExamples.has(ex.id);
@@ -311,7 +293,7 @@ function SlaTab({ state, colors, config, actions }) {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Validation failed");
-      setToast({ type: "ok", text: `A1 Policy is valid! Expected E2 PRB: Dedicated ${data.prb_preview?.dedicated ?? estimatedPrb.dedicated}%, Max ${data.prb_preview?.max ?? estimatedPrb.max}%.` });
+      setToast({ type: "ok", text: "A1 Policy is valid." });
     } catch (e) {
       setToast({ type: "err", text: `Validation failed: ${e.message}` });
     } finally {
@@ -406,7 +388,6 @@ function SlaTab({ state, colors, config, actions }) {
                   <th>Policy ID</th>
                   <th>Slice</th>
                   <th>Gua / Max DL</th>
-                  <th>Status</th>
                   <th style={{ textAlign: "right" }}>Actions</th>
                 </tr>
               </thead>
@@ -414,7 +395,6 @@ function SlaTab({ state, colors, config, actions }) {
                 {activePolicies.map((p) => {
                   const scope = p.policy?.scope?.sliceId || {};
                   const objs = p.policy?.sliceSlaObjectives || {};
-                  const enf = enforcePill(p.status);
                   const selected = editingId === p.policy_id;
                   return (
                     <tr key={p.policy_id} style={selected ? { background: "color-mix(in srgb, var(--accent) 8%, transparent)" } : undefined}>
@@ -424,11 +404,6 @@ function SlaTab({ state, colors, config, actions }) {
                         {objs.guaDlThptPerSlice != null ? Number(objs.guaDlThptPerSlice).toLocaleString() : "—"}
                         {" / "}
                         {objs.maxDlThptPerSlice != null ? Number(objs.maxDlThptPerSlice).toLocaleString() : "—"}
-                      </td>
-                      <td>
-                        <span className={`pill ${enf.cls}`}>{enf.text}</span>
-                        {" "}
-                        <span className={`pill ${p.on_xapp ? "ok" : "warn"}`}>{p.on_xapp ? "xApp" : "no xApp"}</span>
                       </td>
                       <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
                         <button
@@ -455,46 +430,6 @@ function SlaTab({ state, colors, config, actions }) {
             </table>
           </div>
         )}
-      </Card>
-
-      {/* Presets Strip */}
-      <Card>
-        <SectionLabel>O-RAN Standard SLA Presets (ORAN_SliceSLATarget_3.0.0)</SectionLabel>
-        <div className="grid-3" style={{ marginTop: "10px" }}>
-          {PRESET_EXAMPLES.map((ex) => {
-            const isLoaded = activeExamples.has(ex.id);
-            return (
-              <div
-                key={ex.id}
-                style={{
-                  border: isLoaded ? "1px solid var(--accent)" : "1px solid var(--border)",
-                  borderRadius: "8px",
-                  padding: "12px",
-                  background: isLoaded ? "color-mix(in srgb, var(--accent) 5%, var(--surface))" : "var(--surface)",
-                  display: "flex",
-                  flexDirection: "column",
-                  justifyContent: "space-between",
-                  gap: "10px",
-                }}
-              >
-                <div>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "4px" }}>
-                    <strong style={{ fontSize: "13px", color: "var(--text)" }}>{ex.name}</strong>
-                    <span className="pill ok">{ex.badge}</span>
-                  </div>
-                  <p style={{ fontSize: "11px", color: "var(--text-dim)", lineHeight: "1.4" }}>{ex.description}</p>
-                </div>
-                <button
-                  type="button"
-                  className={`btn btn-sm ${isLoaded ? "btn-secondary" : "btn-primary"}`}
-                  onClick={() => handleToggleExample(ex)}
-                >
-                  {isLoaded ? "Unload Preset" : "Add Preset Fields"}
-                </button>
-              </div>
-            );
-          })}
-        </div>
       </Card>
 
       {/* Two-Column Editor Layout */}
@@ -668,27 +603,6 @@ function SlaTab({ state, colors, config, actions }) {
         </Card>
 
         <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
-          <Card>
-            <SectionLabel>Expected E2 PRB Allocation (Near-RT Mapper)</SectionLabel>
-            <div style={{ marginTop: "10px", display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "10px" }}>
-              <div className="sla-metric-box">
-                <div className="sla-metric-lbl">Dedicated PRB</div>
-                <div className="sla-metric-val" style={{ color: "var(--accent)" }}>{estimatedPrb.dedicated}%</div>
-              </div>
-              <div className="sla-metric-box">
-                <div className="sla-metric-lbl">Min PRB</div>
-                <div className="sla-metric-val">{estimatedPrb.min}%</div>
-              </div>
-              <div className="sla-metric-box">
-                <div className="sla-metric-lbl">Max PRB</div>
-                <div className="sla-metric-val">{estimatedPrb.max}%</div>
-              </div>
-            </div>
-            <p style={{ marginTop: "8px", fontSize: "11px", color: "var(--text-faint)" }}>
-              xApp translates Guaranteed DL ({guaDl || 0} kbps) to {estimatedPrb.dedicated}% dedicated PRBs and sets Max PRB ceiling at {estimatedPrb.max}%.
-            </p>
-          </Card>
-
           <Card style={{ flex: 1, display: "flex", flexDirection: "column" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
               <SectionLabel>A1 Policy Payload (JSON Source of Truth)</SectionLabel>
@@ -706,6 +620,46 @@ function SlaTab({ state, colors, config, actions }) {
           </Card>
         </div>
       </div>
+
+      {/* Presets Strip — bottom */}
+      <Card>
+        <SectionLabel>O-RAN Standard SLA Presets (ORAN_SliceSLATarget_3.0.0)</SectionLabel>
+        <div className="grid-3" style={{ marginTop: "10px" }}>
+          {PRESET_EXAMPLES.map((ex) => {
+            const isLoaded = activeExamples.has(ex.id);
+            return (
+              <div
+                key={ex.id}
+                style={{
+                  border: isLoaded ? "1px solid var(--accent)" : "1px solid var(--border)",
+                  borderRadius: "8px",
+                  padding: "12px",
+                  background: isLoaded ? "color-mix(in srgb, var(--accent) 5%, var(--surface))" : "var(--surface)",
+                  display: "flex",
+                  flexDirection: "column",
+                  justifyContent: "space-between",
+                  gap: "10px",
+                }}
+              >
+                <div>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "4px" }}>
+                    <strong style={{ fontSize: "13px", color: "var(--text)" }}>{ex.name}</strong>
+                    <span className="pill ok">{ex.badge}</span>
+                  </div>
+                  <p style={{ fontSize: "11px", color: "var(--text-dim)", lineHeight: "1.4" }}>{ex.description}</p>
+                </div>
+                <button
+                  type="button"
+                  className={`btn btn-sm ${isLoaded ? "btn-secondary" : "btn-primary"}`}
+                  onClick={() => handleToggleExample(ex)}
+                >
+                  {isLoaded ? "Unload Preset" : "Add Preset Fields"}
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      </Card>
     </div>
   );
 }

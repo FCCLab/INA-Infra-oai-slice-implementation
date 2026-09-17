@@ -17,9 +17,8 @@ spec:
     spec:
       containers:
       - name: nws-rapp
-        image: python:3.11-slim
-        imagePullPolicy: IfNotPresent
-        command: ["/bin/sh", "/rapp/entrypoint.sh"]
+        image: 10.1.110.84:5000/nws-rapp:latest
+        imagePullPolicy: Always
         env:
         - name: NWS_RAPP_API_HOST
           value: "0.0.0.0"
@@ -35,19 +34,19 @@ spec:
           value: "20008"
         - name: NWS_XAPP_API_BASE
           value: "http://10.1.101.108:31080"
+        - name: NWS_RAPP_STORE
+          value: "/rapp/out/rapp_store.json"
         ports:
         - name: api
           containerPort: 18090
         - name: ui
           containerPort: 18091
         volumeMounts:
-        - name: app-code
-          mountPath: /rapp
+        - name: rapp-out
+          mountPath: /rapp/out
       volumes:
-      - name: app-code
-        hostPath:
-          path: /home/fcp/smo/osc-non-rt-ric/nonrtric-rapps/rapp-network-slicing/nws/app_rapp
-          type: Directory
+      - name: rapp-out
+        emptyDir: {}
 ---
 apiVersion: v1
 kind: Service
